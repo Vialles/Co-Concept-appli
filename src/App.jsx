@@ -7,7 +7,7 @@ import {
   createUserWithEmailAndPassword,
   signOut,
 } from "firebase/auth";
-import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, setDoc, onSnapshot, collection, addDoc } from "firebase/firestore";
 import {
   Radar,
   FileText,
@@ -458,8 +458,78 @@ function daysLeft(dateStr) {
    VEILLE
 --------------------------------------------------------- */
 
-function Veille({ aos, followed, onFollow }) {
+function AddAOForm({ platforms, onCancel, onSubmit }) {
+  const [titre, setTitre] = useState("");
+  const [acheteur, setAcheteur] = useState("");
+  const [zone, setZone] = useState("");
+  const [dateLimit, setDateLimit] = useState("");
+  const [montant, setMontant] = useState("");
+  const [type, setType] = useState("conception");
+  const [tags, setTags] = useState("");
+  const [sourceId, setSourceId] = useState("");
+
+  const inputStyle = {
+    borderColor: TOKENS.line,
+    fontFamily: "'Inter', sans-serif",
+    color: TOKENS.ink,
+    background: "white",
+  };
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!titre.trim()) return;
+    onSubmit({
+      titre: titre.trim(),
+      acheteur: acheteur.trim(),
+      zone: zone.trim(),
+      dateLimit: dateLimit || null,
+      montant: montant.trim() || null,
+      type,
+      tags: tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean),
+      nouveau: true,
+      custom: true,
+      sourceName: platforms.find((p) => p.id === sourceId)?.name ?? "",
+    });
+  };
+
+  return (
+    <form onSubmit={submit} className="mb-6 p-4 border flex flex-col gap-2" style={{ borderColor: TOKENS.moss, background: "white" }}>
+      <div className="grid sm:grid-cols-2 gap-2">
+        <input required value={titre} onChange={(e) => setTitre(e.target.value)} placeholder="Titre de l'AO" className="p-2 text-sm border outline-none sm:col-span-2" style={inputStyle} />
+        <input value={acheteur} onChange={(e) => setAcheteur(e.target.value)} placeholder="Maître d'ouvrage / acheteur" className="p-2 text-sm border outline-none" style={inputStyle} />
+        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone / commune" className="p-2 text-sm border outline-none" style={inputStyle} />
+        <input type="date" value={dateLimit} onChange={(e) => setDateLimit(e.target.value)} className="p-2 text-sm border outline-none" style={inputStyle} />
+        <input value={montant} onChange={(e) => setMontant(e.target.value)} placeholder="Montant estimé" className="p-2 text-sm border outline-none" style={inputStyle} />
+        <select value={type} onChange={(e) => setType(e.target.value)} className="p-2 text-sm border outline-none" style={inputStyle}>
+          <option value="conception">Conception</option>
+          <option value="chantier">Travaux / Entretien</option>
+        </select>
+        <select value={sourceId} onChange={(e) => setSourceId(e.target.value)} className="p-2 text-sm border outline-none" style={inputStyle}>
+          <option value="">Trouvé sur… (optionnel)</option>
+          {platforms.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+        <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Mots-clés séparés par des virgules" className="p-2 text-sm border outline-none sm:col-span-2" style={inputStyle} />
+      </div>
+      <div className="flex gap-2 mt-1">
+        <button type="submit" className="text-sm px-3 py-2" style={{ background: TOKENS.ink, color: TOKENS.paper, fontFamily: "'Inter', sans-serif", fontWeight: 600 }}>
+          Ajouter cet AO
+        </button>
+        <button type="button" onClick={onCancel} className="text-sm px-3 py-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+          Annuler
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Veille({ aos, followed, onFollow, onAddAO, platforms }) {
   const [query, setQuery] = useState("");
+  const [showForm, setShowForm] = useState(false);
   const filtered = useMemo(
     () =>
       aos.filter((a) =>
@@ -470,7 +540,7 @@ function Veille({ aos, followed, onFollow }) {
 
   return (
     <div className="p-6">
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-4">
         <div
           className="flex items-center gap-2 px-3 py-2 flex-1 max-w-md border"
           style={{ borderColor: TOKENS.line, background: "white" }}
@@ -490,7 +560,25 @@ function Veille({ aos, followed, onFollow }) {
         >
           {filtered.length} appel{filtered.length > 1 ? "s" : ""} d'offres repéré{filtered.length > 1 ? "s" : ""}
         </div>
+        <button
+          onClick={() => setShowForm((s) => !s)}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 ml-auto"
+          style={{ background: TOKENS.ink, color: TOKENS.paper, fontFamily: "'Inter', sans-serif", fontWeight: 600 }}
+        >
+          <Plus size={13} /> Ajouter un AO trouvé
+        </button>
       </div>
+
+      {showForm && (
+        <AddAOForm
+          platforms={platforms}
+          onCancel={() => setShowForm(false)}
+          onSubmit={(data) => {
+            onAddAO(data);
+            setShowForm(false);
+          }}
+        />
+      )}
 
       <div className="grid sm:grid-cols-2 gap-4">
         {filtered.map((ao) => {
@@ -507,7 +595,7 @@ function Veille({ aos, followed, onFollow }) {
                   className="text-[10px] uppercase tracking-wider"
                   style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}
                 >
-                  {ao.id}
+                  {ao.custom ? "Ajouté manuellement" : ao.id}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Tag tone={ao.type === "conception" ? "blue" : "clay"}>
@@ -523,6 +611,12 @@ function Veille({ aos, followed, onFollow }) {
               >
                 {ao.titre}
               </h3>
+
+              {ao.sourceName && (
+                <div className="text-[11px]" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+                  Trouvé sur {ao.sourceName}
+                </div>
+              )}
 
               <div className="flex items-center gap-1.5 text-xs" style={{ color: TOKENS.inkSoft }}>
                 <Building2 size={13} /> {ao.acheteur}
@@ -1839,10 +1933,24 @@ function AppContent({ user }) {
   const [projectData, setProjectData] = useState({});
   const [mainLoaded, setMainLoaded] = useState(false);
   const [mainError, setMainError] = useState("");
+  const [customAOs, setCustomAOs] = useState([]);
   const projectSubs = useRef({});
 
   const TODAY = "2026-08-06";
   const mainRef = doc(db, "organisations", ORG_ID, "app", "main");
+
+  // AO ajoutés manuellement par l'équipe (trouvés sur une plateforme sans
+  // connexion automatique) + les AO de démonstration du prototype.
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "organisations", ORG_ID, "aos"),
+      (snap) => setCustomAOs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (err) => console.error("Erreur de synchronisation Firestore (aos) :", err)
+    );
+    return unsub;
+  }, []);
+  const allAOs = useMemo(() => [...MOCK_AO, ...customAOs], [customAOs]);
+  const onAddAO = (data) => addDoc(collection(db, "organisations", ORG_ID, "aos"), data).catch(console.error);
 
   // Charge le document principal (AO suivis, statuts, plateformes) et
   // reste synchronisé en temps réel — utile si plusieurs personnes
@@ -2029,12 +2137,12 @@ function AppContent({ user }) {
         </div>
         <div className="col-span-12 sm:col-span-10">
           {activeTab === "veille" && (
-            <Veille aos={MOCK_AO} followed={followed} onFollow={onFollow} />
+            <Veille aos={allAOs} followed={followed} onFollow={onFollow} onAddAO={onAddAO} platforms={platforms} />
           )}
-          {activeTab === "redaction" && <Redaction aos={MOCK_AO} followed={followed} />}
+          {activeTab === "redaction" && <Redaction aos={allAOs} followed={followed} />}
           {activeTab === "suivi" && (
             <Suivi
-              aos={MOCK_AO}
+              aos={allAOs}
               followed={followed}
               statuts={statuts}
               onChangeStatut={onChangeStatut}
@@ -2044,7 +2152,7 @@ function AppContent({ user }) {
           )}
           {activeTab === "finances" && (
             <Finances
-              followedAOs={MOCK_AO.filter((a) => followed.includes(a.id))}
+              followedAOs={allAOs.filter((a) => followed.includes(a.id))}
               projectData={projectData}
               ensureProject={ensureProject}
               onUpdateCA={onUpdateCA}
