@@ -1,0 +1,31 @@
+rules_version = '2';
+
+// Modèle de départ : chaque document appartient à une "organisation"
+// (l'entreprise qui utilise l'app). Un utilisateur ne peut lire/écrire
+// que les données de son organisation — c'est la base de l'isolation
+// multi-comptes prévue pour la revente (phase 3).
+//
+// Chaque utilisateur a un document /users/{uid} avec un champ orgId.
+// Chaque projet/AO/personne a un champ orgId qui doit correspondre.
+
+function orgIdOfUser() {
+  return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId;
+}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /organisations/{orgId} {
+      allow read, write: if request.auth != null && orgIdOfUser() == orgId;
+
+      match /{document=**} {
+        allow read, write: if request.auth != null && orgIdOfUser() == orgId;
+      }
+    }
+  }
+}
