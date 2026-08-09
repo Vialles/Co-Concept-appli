@@ -1,5 +1,13 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
+import { auth, db } from "./firebase";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
+import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
 import {
   Radar,
   FileText,
@@ -10,7 +18,6 @@ import {
   Search,
   Plus,
   Check,
-  ChevronRight,
   Clock,
   Building2,
   Trophy,
@@ -25,6 +32,8 @@ import {
   ChevronRight,
   Wallet,
   FileSpreadsheet,
+  LogOut,
+  Loader2,
 } from "lucide-react";
 
 /* ---------------------------------------------------------
@@ -1701,36 +1710,232 @@ function Finances({ followedAOs, projectData, ensureProject, onUpdateCA, onUpdat
    APP
 --------------------------------------------------------- */
 
-export default function App() {
+/* ---------------------------------------------------------
+   AUTHENTIFICATION
+--------------------------------------------------------- */
+
+// Identifiant d'organisation utilisé en phase 1 (usage interne Co-Concept).
+// En phase 3 (revente à d'autres paysagistes), chaque entreprise cliente
+// aura son propre orgId au lieu de cette valeur fixe.
+const ORG_ID = "co-concept";
+
+function LoginScreen() {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      if (mode === "login") {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err) {
+      setError(
+        err.code === "auth/invalid-credential"
+          ? "E-mail ou mot de passe incorrect."
+          : err.code === "auth/email-already-in-use"
+          ? "Un compte existe déjà avec cet e-mail — connectez-vous plutôt."
+          : err.code === "auth/weak-password"
+          ? "Le mot de passe doit faire au moins 6 caractères."
+          : "Une erreur est survenue : " + err.message
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{ background: TOKENS.paper }}
+    >
+      <style>{FONT_IMPORT}</style>
+      <div className="w-full max-w-sm p-6 border" style={{ borderColor: TOKENS.ink, background: "white" }}>
+        <div
+          className="text-[10px] uppercase tracking-widest mb-1"
+          style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.15em" }}
+        >
+          Outil de réponse aux appels d'offres
+        </div>
+        <h1 className="text-2xl mb-6" style={{ color: TOKENS.ink, fontFamily: "'Fraunces', serif", fontWeight: 600 }}>
+          AO Paysage
+        </h1>
+
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <div>
+            <label className="text-xs mb-1 block" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+              E-mail
+            </label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full p-2 text-sm border outline-none"
+              style={{ borderColor: TOKENS.line, fontFamily: "'Inter', sans-serif", color: TOKENS.ink }}
+            />
+          </div>
+          <div>
+            <label className="text-xs mb-1 block" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+              Mot de passe
+            </label>
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full p-2 text-sm border outline-none"
+              style={{ borderColor: TOKENS.line, fontFamily: "'Inter', sans-serif", color: TOKENS.ink }}
+            />
+          </div>
+
+          {error && (
+            <div className="text-xs p-2" style={{ background: TOKENS.rustDim, color: TOKENS.rust, fontFamily: "'Inter', sans-serif" }}>
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={busy}
+            className="flex items-center justify-center gap-2 text-sm py-2 mt-1"
+            style={{ background: TOKENS.ink, color: TOKENS.paper, fontFamily: "'Inter', sans-serif", fontWeight: 600 }}
+          >
+            {busy && <Loader2 size={14} className="animate-spin" />}
+            {mode === "login" ? "Se connecter" : "Créer mon compte"}
+          </button>
+        </form>
+
+        <button
+          onClick={() => {
+            setError("");
+            setMode((m) => (m === "login" ? "signup" : "login"));
+          }}
+          className="text-xs mt-4 underline"
+          style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}
+        >
+          {mode === "login" ? "Pas encore de compte ? En créer un" : "Déjà un compte ? Se connecter"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AppContent({ user }) {
   const [activeTab, setActiveTab] = useState("veille");
-  const [followed, setFollowed] = useState(["AO-2591"]);
-  const [statuts, setStatuts] = useState({ "AO-2591": "En préparation" });
-  const [followedDates, setFollowedDates] = useState({ "AO-2591": "2026-08-04" });
+  const [followed, setFollowed] = useState([]);
+  const [statuts, setStatuts] = useState({});
+  const [followedDates, setFollowedDates] = useState({});
   const [platforms, setPlatforms] = useState(DEFAULT_PLATFORMS);
   const [openProject, setOpenProject] = useState(null);
   const [projectData, setProjectData] = useState({});
+  const [mainLoaded, setMainLoaded] = useState(false);
+  const [mainError, setMainError] = useState("");
+  const projectSubs = useRef({});
 
   const TODAY = "2026-08-06";
+  const mainRef = doc(db, "organisations", ORG_ID, "app", "main");
+
+  // Charge le document principal (AO suivis, statuts, plateformes) et
+  // reste synchronisé en temps réel — utile si plusieurs personnes
+  // utilisent l'app en même temps.
+  useEffect(() => {
+    const unsub = onSnapshot(
+      mainRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setFollowed(data.followed ?? []);
+          setStatuts(data.statuts ?? {});
+          setFollowedDates(data.followedDates ?? {});
+          setPlatforms(data.platforms ?? DEFAULT_PLATFORMS);
+        } else {
+          setDoc(mainRef, {
+            followed: ["AO-2591"],
+            statuts: { "AO-2591": "En préparation" },
+            followedDates: { "AO-2591": TODAY },
+            platforms: DEFAULT_PLATFORMS,
+          });
+        }
+        setMainLoaded(true);
+      },
+      (err) => setMainError(err.message)
+    );
+    return unsub;
+  }, []);
+
+  const pushMain = (patch) => setDoc(mainRef, patch, { merge: true }).catch(console.error);
 
   const onFollow = (id) => {
-    setFollowed((f) => (f.includes(id) ? f : [...f, id]));
-    setStatuts((s) => (s[id] ? s : { ...s, [id]: "Repéré" }));
-    setFollowedDates((d) => (d[id] ? d : { ...d, [id]: TODAY }));
+    setFollowed((f) => {
+      const next = f.includes(id) ? f : [...f, id];
+      pushMain({ followed: next });
+      return next;
+    });
+    setStatuts((s) => {
+      const next = s[id] ? s : { ...s, [id]: "Repéré" };
+      pushMain({ statuts: next });
+      return next;
+    });
+    setFollowedDates((d) => {
+      const next = d[id] ? d : { ...d, [id]: TODAY };
+      pushMain({ followedDates: next });
+      return next;
+    });
   };
-  const onUnfollow = (id) => setFollowed((f) => f.filter((x) => x !== id));
-  const onChangeStatut = (id, val) => setStatuts((s) => ({ ...s, [id]: val }));
+  const onUnfollow = (id) =>
+    setFollowed((f) => {
+      const next = f.filter((x) => x !== id);
+      pushMain({ followed: next });
+      return next;
+    });
+  const onChangeStatut = (id, val) =>
+    setStatuts((s) => {
+      const next = { ...s, [id]: val };
+      pushMain({ statuts: next });
+      return next;
+    });
 
+  // Abonne (une seule fois par projet) le document Firestore correspondant.
+  // Si le projet n'existe pas encore côté serveur, on le crée avec les
+  // valeurs par défaut générées localement.
   const ensureProject = (ao) => {
-    setProjectData((pd) =>
-      pd[ao.id] ? pd : { ...pd, [ao.id]: getProjectDetail(ao, followedDates[ao.id] ?? TODAY) }
+    if (projectSubs.current[ao.id]) return;
+    const ref = doc(db, "organisations", ORG_ID, "projects", ao.id);
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (snap.exists()) {
+          setProjectData((pd) => ({ ...pd, [ao.id]: snap.data() }));
+        } else {
+          const initial = getProjectDetail(ao, followedDates[ao.id] ?? TODAY);
+          setDoc(ref, initial).catch(console.error);
+          setProjectData((pd) => ({ ...pd, [ao.id]: initial }));
+        }
+      },
+      (err) => console.error("Erreur de synchronisation Firestore (projet " + ao.id + ") :", err)
     );
+    projectSubs.current[ao.id] = unsub;
   };
   const onOpenProject = (ao) => {
     ensureProject(ao);
     setOpenProject(ao);
   };
   const updateProject = (aoId, updater) =>
-    setProjectData((pd) => (pd[aoId] ? { ...pd, [aoId]: updater(pd[aoId]) } : pd));
+    setProjectData((pd) => {
+      if (!pd[aoId]) return pd;
+      const next = updater(pd[aoId]);
+      setDoc(doc(db, "organisations", ORG_ID, "projects", aoId), next).catch(console.error);
+      return { ...pd, [aoId]: next };
+    });
 
   const onUpdateCA = (aoId, monthKey, value) =>
     updateProject(aoId, (d) => ({
@@ -1750,9 +1955,47 @@ export default function App() {
     }));
 
   const onTogglePlatform = (id) =>
-    setPlatforms((ps) => ps.map((p) => (p.id === id ? { ...p, active: !p.active } : p)));
-  const onRemovePlatform = (id) => setPlatforms((ps) => ps.filter((p) => p.id !== id));
-  const onAddPlatform = (p) => setPlatforms((ps) => [...ps, p]);
+    setPlatforms((ps) => {
+      const next = ps.map((p) => (p.id === id ? { ...p, active: !p.active } : p));
+      pushMain({ platforms: next });
+      return next;
+    });
+  const onRemovePlatform = (id) =>
+    setPlatforms((ps) => {
+      const next = ps.filter((p) => p.id !== id);
+      pushMain({ platforms: next });
+      return next;
+    });
+  const onAddPlatform = (p) =>
+    setPlatforms((ps) => {
+      const next = [...ps, p];
+      pushMain({ platforms: next });
+      return next;
+    });
+
+  if (mainError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <div className="max-w-sm text-sm p-4 border" style={{ borderColor: TOKENS.rust, background: TOKENS.rustDim, color: TOKENS.rust, fontFamily: "'Inter', sans-serif" }}>
+          Impossible de charger les données : {mainError}
+          <br />
+          Vérifiez que les règles de sécurité Firestore sont bien publiées.
+        </div>
+      </div>
+    );
+  }
+
+  if (!mainLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <div className="flex items-center gap-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+          <Loader2 size={16} className="animate-spin" /> Chargement des données…
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100%", background: TOKENS.paper }}>
@@ -1770,6 +2013,18 @@ export default function App() {
             <span className="text-[11px]" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
               {followed.length} AO suivi{followed.length > 1 ? "s" : ""}
             </span>
+          </div>
+          <div className="px-4 py-2 flex flex-col gap-1" style={{ borderTop: `1px solid ${TOKENS.line}` }}>
+            <span className="text-[10px] truncate" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+              {user.email}
+            </span>
+            <button
+              onClick={() => signOut(auth)}
+              className="flex items-center gap-1.5 text-[11px]"
+              style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}
+            >
+              <LogOut size={12} /> Se déconnecter
+            </button>
           </div>
         </div>
         <div className="col-span-12 sm:col-span-10">
@@ -1864,4 +2119,76 @@ export default function App() {
       )}
     </div>
   );
+}
+
+/* ---------------------------------------------------------
+   APP (authentification)
+--------------------------------------------------------- */
+
+export default function App() {
+  const [user, setUser] = useState(undefined); // undefined = en cours de vérification, null = déconnecté
+  const [orgReady, setOrgReady] = useState(false);
+  const [orgError, setOrgError] = useState("");
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    return unsub;
+  }, []);
+
+  // Chaque personne qui se connecte pour la première fois obtient un
+  // document /users/{uid} rattaché à l'organisation Co-Concept — c'est ce
+  // qui lui donne le droit de lire/écrire les données de l'organisation
+  // selon les règles de sécurité Firestore. On attend que ce document soit
+  // confirmé avant de charger le reste de l'app, pour éviter toute lecture
+  // refusée par les règles de sécurité.
+  useEffect(() => {
+    if (!user) {
+      setOrgReady(false);
+      return;
+    }
+    const uref = doc(db, "users", user.uid);
+    getDoc(uref)
+      .then((snap) => (snap.exists() ? null : setDoc(uref, { orgId: ORG_ID, email: user.email })))
+      .then(() => setOrgReady(true))
+      .catch((err) => setOrgError(err.message));
+  }, [user]);
+
+  if (user === undefined) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <Loader2 size={20} className="animate-spin" style={{ color: TOKENS.inkSoft }} />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen />;
+  }
+
+  if (orgError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <div className="max-w-sm text-sm p-4 border" style={{ borderColor: TOKENS.rust, background: TOKENS.rustDim, color: TOKENS.rust, fontFamily: "'Inter', sans-serif" }}>
+          Impossible d'accéder à Firestore : {orgError}
+          <br />
+          Vérifiez que les règles de sécurité sont bien publiées.
+        </div>
+      </div>
+    );
+  }
+
+  if (!orgReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <div className="flex items-center gap-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+          <Loader2 size={16} className="animate-spin" /> Préparation de votre compte…
+        </div>
+      </div>
+    );
+  }
+
+  return <AppContent user={user} />;
 }
