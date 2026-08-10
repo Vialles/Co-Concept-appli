@@ -1,13 +1,14 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
-import { auth, db } from "./firebase";
+import { auth, db, storage } from "./firebase";
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
 } from "firebase/auth";
-import { doc, getDoc, setDoc, onSnapshot, collection, addDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, onSnapshot, collection, addDoc, deleteDoc } from "firebase/firestore";
+import { ref as storageRef, uploadBytes, getDownloadURL, listAll, deleteObject } from "firebase/storage";
 import {
   Radar,
   FileText,
@@ -34,6 +35,11 @@ import {
   FileSpreadsheet,
   LogOut,
   Loader2,
+  Pencil,
+  Trash2,
+  Archive,
+  Image,
+  Upload,
 } from "lucide-react";
 
 /* ---------------------------------------------------------
@@ -350,6 +356,7 @@ function Cartouche({ activeTab }) {
     suivi: "Suivi",
     finances: "Suivi financier",
     sources: "Sources",
+    historique: "Historique",
   }[activeTab];
 
   return (
@@ -458,15 +465,17 @@ function daysLeft(dateStr) {
    VEILLE
 --------------------------------------------------------- */
 
-function AddAOForm({ platforms, onCancel, onSubmit }) {
-  const [titre, setTitre] = useState("");
-  const [acheteur, setAcheteur] = useState("");
-  const [zone, setZone] = useState("");
-  const [dateLimit, setDateLimit] = useState("");
-  const [montant, setMontant] = useState("");
-  const [type, setType] = useState("conception");
-  const [tags, setTags] = useState("");
-  const [sourceId, setSourceId] = useState("");
+function AddAOForm({ platforms, initial, onCancel, onSubmit }) {
+  const [titre, setTitre] = useState(initial?.titre ?? "");
+  const [acheteur, setAcheteur] = useState(initial?.acheteur ?? "");
+  const [zone, setZone] = useState(initial?.zone ?? "");
+  const [dateLimit, setDateLimit] = useState(initial?.dateLimit ?? "");
+  const [montant, setMontant] = useState(initial?.montant ?? "");
+  const [type, setType] = useState(initial?.type ?? "conception");
+  const [tags, setTags] = useState((initial?.tags ?? []).join(", "));
+  const [sourceId, setSourceId] = useState(
+    platforms.find((p) => p.name === initial?.sourceName)?.id ?? ""
+  );
 
   const inputStyle = {
     borderColor: TOKENS.line,
@@ -489,7 +498,7 @@ function AddAOForm({ platforms, onCancel, onSubmit }) {
         .split(",")
         .map((t) => t.trim())
         .filter(Boolean),
-      nouveau: true,
+      nouveau: initial?.nouveau ?? true,
       custom: true,
       sourceName: platforms.find((p) => p.id === sourceId)?.name ?? "",
     });
@@ -517,7 +526,7 @@ function AddAOForm({ platforms, onCancel, onSubmit }) {
       </div>
       <div className="flex gap-2 mt-1">
         <button type="submit" className="text-sm px-3 py-2" style={{ background: TOKENS.ink, color: TOKENS.paper, fontFamily: "'Inter', sans-serif", fontWeight: 600 }}>
-          Ajouter cet AO
+          {initial ? "Enregistrer les modifications" : "Ajouter cet AO"}
         </button>
         <button type="button" onClick={onCancel} className="text-sm px-3 py-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
           Annuler
@@ -527,9 +536,10 @@ function AddAOForm({ platforms, onCancel, onSubmit }) {
   );
 }
 
-function Veille({ aos, followed, onFollow, onAddAO, platforms }) {
+function Veille({ aos, followed, onFollow, onAddAO, onUpdateAO, onDeleteAO, onArchiveAO, platforms }) {
   const [query, setQuery] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const filtered = useMemo(
     () =>
       aos.filter((a) =>
@@ -537,6 +547,7 @@ function Veille({ aos, followed, onFollow, onAddAO, platforms }) {
       ),
     [aos, query]
   );
+  const editingAO = aos.find((a) => a.id === editingId);
 
   return (
     <div className="p-6">
@@ -561,13 +572,28 @@ function Veille({ aos, followed, onFollow, onAddAO, platforms }) {
           {filtered.length} appel{filtered.length > 1 ? "s" : ""} d'offres repéré{filtered.length > 1 ? "s" : ""}
         </div>
         <button
-          onClick={() => setShowForm((s) => !s)}
+          onClick={() => {
+            setEditingId(null);
+            setShowForm((s) => !s);
+          }}
           className="flex items-center gap-1.5 text-xs px-3 py-2 ml-auto"
           style={{ background: TOKENS.ink, color: TOKENS.paper, fontFamily: "'Inter', sans-serif", fontWeight: 600 }}
         >
           <Plus size={13} /> Ajouter un AO trouvé
         </button>
       </div>
+
+      {editingAO && (
+        <AddAOForm
+          platforms={platforms}
+          initial={editingAO}
+          onCancel={() => setEditingId(null)}
+          onSubmit={(data) => {
+            onUpdateAO(editingAO.id, data);
+            setEditingId(null);
+          }}
+        />
+      )}
 
       {showForm && (
         <AddAOForm
@@ -663,10 +689,39 @@ function Veille({ aos, followed, onFollow, onAddAO, platforms }) {
                 ))}
               </div>
 
+              <div className="flex items-center gap-3 pt-1 border-t" style={{ borderColor: TOKENS.line }}>
+                <button
+                  onClick={() => {
+                    setShowForm(false);
+                    setEditingId(ao.id);
+                  }}
+                  className="flex items-center gap-1 text-[11px]"
+                  style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}
+                >
+                  <Pencil size={12} /> Modifier
+                </button>
+                <button
+                  onClick={() => onArchiveAO(ao.id)}
+                  className="flex items-center gap-1 text-[11px]"
+                  style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}
+                >
+                  <Archive size={12} /> Archiver (réalisé)
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm("Supprimer définitivement cet AO ?")) onDeleteAO(ao.id);
+                  }}
+                  className="flex items-center gap-1 text-[11px] ml-auto"
+                  style={{ color: TOKENS.rust, fontFamily: "'Inter', sans-serif" }}
+                >
+                  <Trash2 size={12} /> Supprimer
+                </button>
+              </div>
+
               <button
                 onClick={() => onFollow(ao.id)}
                 disabled={isFollowed}
-                className="mt-2 flex items-center justify-center gap-2 text-sm py-2 transition-opacity"
+                className="mt-1 flex items-center justify-center gap-2 text-sm py-2 transition-opacity"
                 style={{
                   background: isFollowed ? TOKENS.paperDim : TOKENS.ink,
                   color: isFollowed ? TOKENS.inkSoft : TOKENS.paper,
@@ -1801,8 +1856,141 @@ function Finances({ followedAOs, projectData, ensureProject, onUpdateCA, onUpdat
 }
 
 /* ---------------------------------------------------------
-   APP
+   HISTORIQUE (AO réalisés + galerie photo par dossier)
 --------------------------------------------------------- */
+
+function PhotoGallery({ ao }) {
+  const [photos, setPhotos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const folderRef = storageRef(storage, `organisations/${ORG_ID}/photos/${ao.id}`);
+
+  const refresh = () => {
+    setLoading(true);
+    listAll(folderRef)
+      .then(async (res) => {
+        const items = await Promise.all(
+          res.items.map(async (item) => ({ name: item.name, url: await getDownloadURL(item), ref: item }))
+        );
+        setPhotos(items);
+      })
+      .catch((err) => console.error("Erreur de chargement des photos :", err))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(refresh, [ao.id]);
+
+  const handleUpload = async (e) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    setUploading(true);
+    try {
+      for (const file of files) {
+        const fileRef = storageRef(folderRef, `${Date.now()}-${file.name}`);
+        await uploadBytes(fileRef, file);
+      }
+      refresh();
+    } catch (err) {
+      console.error("Erreur d'envoi de photo :", err);
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  };
+
+  const handleDelete = (photo) => {
+    deleteObject(photo.ref)
+      .then(() => setPhotos((p) => p.filter((x) => x.name !== photo.name)))
+      .catch((err) => console.error("Erreur de suppression de photo :", err));
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t" style={{ borderColor: TOKENS.line }}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] uppercase tracking-wider flex items-center gap-1.5" style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}>
+          <Image size={13} /> Photos du dossier
+        </span>
+        <label
+          className="flex items-center gap-1.5 text-[11px] px-2 py-1 cursor-pointer"
+          style={{ background: TOKENS.mossDim, color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}
+        >
+          {uploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+          Ajouter des photos
+          <input type="file" accept="image/*" multiple onChange={handleUpload} className="hidden" disabled={uploading} />
+        </label>
+      </div>
+
+      {loading ? (
+        <div className="text-[11px]" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>Chargement…</div>
+      ) : photos.length === 0 ? (
+        <div className="text-[11px]" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>Aucune photo pour l'instant.</div>
+      ) : (
+        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+          {photos.map((photo) => (
+            <div key={photo.name} className="relative group">
+              <a href={photo.url} target="_blank" rel="noreferrer">
+                <img src={photo.url} alt="" className="w-full h-20 object-cover border" style={{ borderColor: TOKENS.line }} />
+              </a>
+              <button
+                onClick={() => handleDelete(photo)}
+                className="absolute top-1 right-1 p-0.5"
+                style={{ background: "rgba(32,43,33,0.7)", color: "white" }}
+                aria-label="Supprimer la photo"
+              >
+                <X size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Historique({ aos, onRestoreAO }) {
+  const [openId, setOpenId] = useState(null);
+
+  if (aos.length === 0) {
+    return (
+      <div className="p-10 text-center">
+        <p style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+          Aucun dossier archivé pour l'instant. Une fois un projet réalisé, archivez-le depuis Veille
+          pour le retrouver ici avec ses photos.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 flex flex-col gap-3">
+      {aos.map((ao) => (
+        <div key={ao.id} className="border p-4" style={{ borderColor: TOKENS.line, background: "white" }}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="cursor-pointer" onClick={() => setOpenId((id) => (id === ao.id ? null : ao.id))}>
+              <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                {ao.acheteur}
+              </div>
+              <div className="text-sm" style={{ color: TOKENS.ink, fontFamily: "'Fraunces', serif", fontWeight: 600 }}>
+                {ao.titre}
+              </div>
+              <div className="text-[11px] mt-0.5" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+                {ao.zone}
+              </div>
+            </div>
+            <button
+              onClick={() => onRestoreAO(ao.id)}
+              className="text-[11px] px-2 py-1 shrink-0"
+              style={{ background: TOKENS.paperDim, color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}
+            >
+              Réactiver
+            </button>
+          </div>
+          {openId === ao.id && <PhotoGallery ao={ao} />}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------
    AUTHENTIFICATION
@@ -1933,24 +2121,46 @@ function AppContent({ user }) {
   const [projectData, setProjectData] = useState({});
   const [mainLoaded, setMainLoaded] = useState(false);
   const [mainError, setMainError] = useState("");
-  const [customAOs, setCustomAOs] = useState([]);
+  const [aos, setAOs] = useState([]);
+  const [aosLoaded, setAOsLoaded] = useState(false);
+  const seededRef = useRef(false);
   const projectSubs = useRef({});
 
   const TODAY = "2026-08-06";
   const mainRef = doc(db, "organisations", ORG_ID, "app", "main");
+  const aosColRef = collection(db, "organisations", ORG_ID, "aos");
 
-  // AO ajoutés manuellement par l'équipe (trouvés sur une plateforme sans
-  // connexion automatique) + les AO de démonstration du prototype.
+  // Tous les AO (démo + ajoutés manuellement) vivent dans Firestore, pour
+  // pouvoir être modifiés/supprimés/archivés réellement. Au tout premier
+  // lancement (collection vide), on y recopie les AO de démonstration en
+  // conservant leurs identifiants (AO-2591, etc.) pour rester compatibles
+  // avec les fiches projet déjà préparées.
   useEffect(() => {
     const unsub = onSnapshot(
-      collection(db, "organisations", ORG_ID, "aos"),
-      (snap) => setCustomAOs(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      aosColRef,
+      (snap) => {
+        setAOs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setAOsLoaded(true);
+        if (snap.empty && !seededRef.current) {
+          seededRef.current = true;
+          MOCK_AO.forEach(({ id, ...rest }) => {
+            setDoc(doc(aosColRef, id), { ...rest, historique: false }).catch(console.error);
+          });
+        }
+      },
       (err) => console.error("Erreur de synchronisation Firestore (aos) :", err)
     );
     return unsub;
   }, []);
-  const allAOs = useMemo(() => [...MOCK_AO, ...customAOs], [customAOs]);
-  const onAddAO = (data) => addDoc(collection(db, "organisations", ORG_ID, "aos"), data).catch(console.error);
+
+  const onAddAO = (data) => addDoc(aosColRef, { ...data, historique: false }).catch(console.error);
+  const onUpdateAO = (id, patch) => setDoc(doc(aosColRef, id), patch, { merge: true }).catch(console.error);
+  const onDeleteAO = (id) => deleteDoc(doc(aosColRef, id)).catch(console.error);
+  const onArchiveAO = (id) => onUpdateAO(id, { historique: true });
+  const onRestoreAO = (id) => onUpdateAO(id, { historique: false });
+
+  const activeAOs = useMemo(() => aos.filter((a) => !a.historique), [aos]);
+  const historiqueAOs = useMemo(() => aos.filter((a) => a.historique), [aos]);
 
   // Charge le document principal (AO suivis, statuts, plateformes) et
   // reste synchronisé en temps réel — utile si plusieurs personnes
@@ -2094,7 +2304,7 @@ function AppContent({ user }) {
     );
   }
 
-  if (!mainLoaded) {
+  if (!mainLoaded || !aosLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
         <style>{FONT_IMPORT}</style>
@@ -2116,6 +2326,7 @@ function AppContent({ user }) {
           <NavItem icon={KanbanSquare} label="Suivi" active={activeTab === "suivi"} onClick={() => setActiveTab("suivi")} />
           <NavItem icon={Wallet} label="Suivi financier" active={activeTab === "finances"} onClick={() => setActiveTab("finances")} />
           <NavItem icon={Globe} label="Sources" active={activeTab === "sources"} onClick={() => setActiveTab("sources")} />
+          <NavItem icon={Archive} label="Historique" active={activeTab === "historique"} onClick={() => setActiveTab("historique")} />
           <div className="px-4 py-4 mt-2 flex items-center gap-2" style={{ color: TOKENS.inkSoft }}>
             <Trophy size={13} />
             <span className="text-[11px]" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
@@ -2137,12 +2348,21 @@ function AppContent({ user }) {
         </div>
         <div className="col-span-12 sm:col-span-10">
           {activeTab === "veille" && (
-            <Veille aos={allAOs} followed={followed} onFollow={onFollow} onAddAO={onAddAO} platforms={platforms} />
+            <Veille
+              aos={activeAOs}
+              followed={followed}
+              onFollow={onFollow}
+              onAddAO={onAddAO}
+              onUpdateAO={onUpdateAO}
+              onDeleteAO={onDeleteAO}
+              onArchiveAO={onArchiveAO}
+              platforms={platforms}
+            />
           )}
-          {activeTab === "redaction" && <Redaction aos={allAOs} followed={followed} />}
+          {activeTab === "redaction" && <Redaction aos={activeAOs} followed={followed} />}
           {activeTab === "suivi" && (
             <Suivi
-              aos={allAOs}
+              aos={activeAOs}
               followed={followed}
               statuts={statuts}
               onChangeStatut={onChangeStatut}
@@ -2152,7 +2372,7 @@ function AppContent({ user }) {
           )}
           {activeTab === "finances" && (
             <Finances
-              followedAOs={allAOs.filter((a) => followed.includes(a.id))}
+              followedAOs={activeAOs.filter((a) => followed.includes(a.id))}
               projectData={projectData}
               ensureProject={ensureProject}
               onUpdateCA={onUpdateCA}
@@ -2167,7 +2387,9 @@ function AppContent({ user }) {
               onAdd={onAddPlatform}
             />
           )}
+          {activeTab === "historique" && <Historique aos={historiqueAOs} onRestoreAO={onRestoreAO} />}
         </div>
+
       </div>
       {openProject && projectData[openProject.id] && (
         <ProjectDetail
