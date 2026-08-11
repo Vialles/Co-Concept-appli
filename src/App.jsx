@@ -2499,4 +2499,173 @@ function AppContent({ user }) {
           )}
           {activeTab === "finances" && (
             <Finances
-              followedAOs={activeAOs.filter((a) => followed.include
+              followedAOs={activeAOs.filter((a) => followed.includes(a.id))}
+              projectData={projectData}
+              ensureProject={ensureProject}
+              onUpdateCA={onUpdateCA}
+              onUpdateHours={onUpdateHours}
+            />
+          )}
+          {activeTab === "sources" && (
+            <Sources
+              platforms={platforms}
+              onToggle={onTogglePlatform}
+              onRemove={onRemovePlatform}
+              onAdd={onAddPlatform}
+            />
+          )}
+          {activeTab === "historique" && <Historique aos={historiqueAOs} onRestoreAO={onRestoreAO} />}
+        </div>
+
+      </div>
+      {openProject && projectData[openProject.id] && (
+        <ProjectDetail
+          key={openProject.id}
+          ao={openProject}
+          detail={projectData[openProject.id]}
+          onClose={() => setOpenProject(null)}
+          onUpdateTask={(taskId, patch) =>
+            updateProject(openProject.id, (d) => ({
+              ...d,
+              tasks: d.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)),
+            }))
+          }
+          onAddTask={() =>
+            updateProject(openProject.id, (d) => ({
+              ...d,
+              tasks: [
+                ...d.tasks,
+                {
+                  id: "t-" + Date.now(),
+                  label: "Nouvelle tâche",
+                  assigneeId: d.team[0]?.id,
+                  start: d.rangeStart,
+                  end: d.rangeEnd,
+                },
+              ],
+            }))
+          }
+          onRemoveTask={(taskId) =>
+            updateProject(openProject.id, (d) => ({ ...d, tasks: d.tasks.filter((t) => t.id !== taskId) }))
+          }
+          onUpdateMember={(memberId, patch) =>
+            updateProject(openProject.id, (d) => ({
+              ...d,
+              team: d.team.map((m) => (m.id === memberId ? { ...m, ...patch } : m)),
+            }))
+          }
+          onAddMember={() =>
+            updateProject(openProject.id, (d) => ({
+              ...d,
+              team: [...d.team, { id: "mb-" + Date.now(), name: "", poste: "", mandataire: false }],
+            }))
+          }
+          onRemoveMember={(memberId) =>
+            updateProject(openProject.id, (d) => ({ ...d, team: d.team.filter((m) => m.id !== memberId) }))
+          }
+          onSetMandataire={(memberId) =>
+            updateProject(openProject.id, (d) => ({
+              ...d,
+              team: d.team.map((m) => ({ ...m, mandataire: m.id === memberId })),
+            }))
+          }
+          onUpdateLinks={(patch) =>
+            updateProject(openProject.id, (d) => ({ ...d, links: { ...d.links, ...patch } }))
+          }
+          onAddMeeting={() => {
+            const id = "r-" + Date.now();
+            updateProject(openProject.id, (d) => ({
+              ...d,
+              meetings: [
+                ...d.meetings,
+                { id, title: "Nouvelle réunion", date: d.rangeStart, time: "09:00", attendees: [] },
+              ],
+            }));
+            return id;
+          }}
+          onUpdateMeeting={(meetingId, patch) =>
+            updateProject(openProject.id, (d) => ({
+              ...d,
+              meetings: d.meetings.map((r) => (r.id === meetingId ? { ...r, ...patch } : r)),
+            }))
+          }
+          onRemoveMeeting={(meetingId) =>
+            updateProject(openProject.id, (d) => ({ ...d, meetings: d.meetings.filter((r) => r.id !== meetingId) }))
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   APP (authentification)
+--------------------------------------------------------- */
+
+export default function App() {
+  const [user, setUser] = useState(undefined); // undefined = en cours de vérification, null = déconnecté
+  const [orgReady, setOrgReady] = useState(false);
+  const [orgError, setOrgError] = useState("");
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    return unsub;
+  }, []);
+
+  // Chaque personne qui se connecte pour la première fois obtient un
+  // document /users/{uid} rattaché à l'organisation Co-Concept — c'est ce
+  // qui lui donne le droit de lire/écrire les données de l'organisation
+  // selon les règles de sécurité Firestore. On attend que ce document soit
+  // confirmé avant de charger le reste de l'app, pour éviter toute lecture
+  // refusée par les règles de sécurité.
+  useEffect(() => {
+    if (!user) {
+      setOrgReady(false);
+      return;
+    }
+    const uref = doc(db, "users", user.uid);
+    getDoc(uref)
+      .then((snap) => (snap.exists() ? null : setDoc(uref, { orgId: ORG_ID, email: user.email })))
+      .then(() => setOrgReady(true))
+      .catch((err) => setOrgError(err.message));
+  }, [user]);
+
+  if (user === undefined) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <Loader2 size={20} className="animate-spin" style={{ color: TOKENS.inkSoft }} />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen />;
+  }
+
+  if (orgError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <div className="max-w-sm text-sm p-4 border" style={{ borderColor: TOKENS.rust, background: TOKENS.rustDim, color: TOKENS.rust, fontFamily: "'Inter', sans-serif" }}>
+          Impossible d'accéder à Firestore : {orgError}
+          <br />
+          Vérifiez que les règles de sécurité sont bien publiées.
+        </div>
+      </div>
+    );
+  }
+
+  if (!orgReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
+        <style>{FONT_IMPORT}</style>
+        <div className="flex items-center gap-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+          <Loader2 size={16} className="animate-spin" /> Préparation de votre compte…
+        </div>
+      </div>
+    );
+  }
+
+  return <AppContent user={user} />;
+}
