@@ -205,6 +205,13 @@ const TYPE_LABEL = {
   chantier: "Travaux / Entretien",
 };
 
+const PIECE_STATUTS = [
+  { value: "a_faire", label: "À faire" },
+  { value: "en_cours", label: "En cours" },
+  { value: "termine", label: "Terminé" },
+  { value: "pas_demande", label: "Pas demandé" },
+];
+
 const PIECES_ADMIN = [
   "Kbis de moins de 3 mois",
   "Attestation d'assurance décennale",
@@ -277,6 +284,13 @@ const PROJECT_DETAILS = {
   },
 };
 
+function defaultPieces(type) {
+  return {
+    piecesAdmin: PIECES_ADMIN.map((label, i) => ({ id: "a" + i, label, status: "a_faire" })),
+    piecesTech: PIECES_PAR_TYPE[type].map((label, i) => ({ id: "t" + i, label, status: "a_faire" })),
+  };
+}
+
 function defaultProjectDetail(ao, followedDate) {
   const start = new Date(followedDate ?? "2026-08-06");
   const end = ao.dateLimit ? new Date(ao.dateLimit) : new Date(start.getTime() + 60 * 86400000);
@@ -299,6 +313,8 @@ function defaultProjectDetail(ao, followedDate) {
     ],
     links: { canva: "", onenote: "" },
     finance: { caByMonth: {}, hours: {} },
+    ...defaultPieces(ao.type),
+    memo: {},
     rangeStart: fmt(start),
     rangeEnd: fmt(end),
   };
@@ -311,6 +327,9 @@ function getProjectDetail(ao, followedDate) {
       ...base,
       links: base.links ?? { canva: "", onenote: "" },
       finance: base.finance ?? { caByMonth: {}, hours: {} },
+      piecesAdmin: base.piecesAdmin ?? defaultPieces(ao.type).piecesAdmin,
+      piecesTech: base.piecesTech ?? defaultPieces(ao.type).piecesTech,
+      memo: base.memo ?? {},
       rangeStart: followedDate ?? base.tasks[0]?.start,
       rangeEnd: ao.dateLimit ?? base.tasks[base.tasks.length - 1]?.end,
     };
@@ -751,33 +770,47 @@ function Veille({ aos, followed, onFollow, onAddAO, onUpdateAO, onDeleteAO, onAr
    REDACTION
 --------------------------------------------------------- */
 
-function Redaction({ aos, followed }) {
+function Redaction({ aos, followed, projectData, ensureProject, updateProject }) {
   const followedAOs = aos.filter((a) => followed.includes(a.id));
-  const [selectedId, setSelectedId] = useState(followedAOs[0]?.id ?? null);
-  const [checked, setChecked] = useState({});
-  const [memo, setMemo] = useState({});
-  const [piecesAdmin, setPiecesAdmin] = useState({});
-  const [piecesTech, setPiecesTech] = useState({});
-
-  const selected = aos.find((a) => a.id === selectedId);
+  const [selectedId, setSelectedId] = useState(null);
 
   useEffect(() => {
-    followedAOs.forEach((a) => {
-      setPiecesAdmin((p) =>
-        p[a.id] ? p : { ...p, [a.id]: PIECES_ADMIN.map((label, i) => ({ id: "a" + i, label })) }
-      );
-      setPiecesTech((p) =>
-        p[a.id] ? p : { ...p, [a.id]: PIECES_PAR_TYPE[a.type].map((label, i) => ({ id: "t" + i, label })) }
-      );
-    });
+    followedAOs.forEach((a) => ensureProject(a));
   }, [followed]);
 
-  const updatePieceLabel = (setter, aoId, pieceId, label) =>
-    setter((p) => ({ ...p, [aoId]: p[aoId].map((pc) => (pc.id === pieceId ? { ...pc, label } : pc)) }));
-  const addPiece = (setter, aoId) =>
-    setter((p) => ({ ...p, [aoId]: [...(p[aoId] ?? []), { id: "custom-" + Date.now(), label: "" }] }));
-  const removePiece = (setter, aoId, pieceId) =>
-    setter((p) => ({ ...p, [aoId]: p[aoId].filter((pc) => pc.id !== pieceId) }));
+  useEffect(() => {
+    if (!selectedId && followedAOs[0]) setSelectedId(followedAOs[0].id);
+  }, [followedAOs.map((a) => a.id).join(",")]);
+
+  const selected = aos.find((a) => a.id === selectedId);
+  const detail = selected ? projectData[selected.id] : null;
+
+  const updatePieceStatus = (section, pieceId, status) =>
+    updateProject(selected.id, (d) => ({
+      ...d,
+      [section]: d[section].map((pc) => (pc.id === pieceId ? { ...pc, status } : pc)),
+    }));
+  const updatePieceLabel = (section, pieceId, label) =>
+    updateProject(selected.id, (d) => ({
+      ...d,
+      [section]: d[section].map((pc) => (pc.id === pieceId ? { ...pc, label } : pc)),
+    }));
+  const addPiece = (section) =>
+    updateProject(selected.id, (d) => ({
+      ...d,
+      [section]: [...d[section], { id: "custom-" + Date.now(), label: "", status: "a_faire" }],
+    }));
+  const removePiece = (section, pieceId) =>
+    updateProject(selected.id, (d) => ({ ...d, [section]: d[section].filter((pc) => pc.id !== pieceId) }));
+  const updateMemo = (key, value) =>
+    updateProject(selected.id, (d) => ({ ...d, memo: { ...d.memo, [key]: value } }));
+
+  const inputStyle = {
+    borderColor: TOKENS.line,
+    fontFamily: "'Inter', sans-serif",
+    color: TOKENS.ink,
+    background: "white",
+  };
 
   if (followedAOs.length === 0) {
     return (
@@ -788,6 +821,50 @@ function Redaction({ aos, followed }) {
       </div>
     );
   }
+
+  const renderPieces = (section, list, activeColor) => (
+    <div className="flex flex-col gap-1.5">
+      {(list ?? []).map((piece) => {
+        const isNotAsked = piece.status === "pas_demande";
+        return (
+          <div
+            key={piece.id}
+            className="flex items-center gap-2 p-1"
+            style={{ opacity: isNotAsked ? 0.45 : 1, background: isNotAsked ? TOKENS.paperDim : "transparent" }}
+          >
+            <select
+              value={piece.status ?? "a_faire"}
+              onChange={(e) => updatePieceStatus(section, piece.id, e.target.value)}
+              className="text-[11px] px-1.5 py-1 border outline-none shrink-0"
+              style={{
+                borderColor: TOKENS.line,
+                fontFamily: "'JetBrains Mono', monospace",
+                color: activeColor,
+                background: "white",
+                width: 108,
+              }}
+            >
+              {PIECE_STATUTS.map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+            <input
+              value={piece.label}
+              onChange={(e) => updatePieceLabel(section, piece.id, e.target.value)}
+              className="flex-1 text-sm px-2 py-1 border outline-none"
+              style={{
+                ...inputStyle,
+                textDecoration: piece.status === "termine" ? "line-through" : "none",
+              }}
+            />
+            <button onClick={() => removePiece(section, piece.id)} style={{ color: TOKENS.inkSoft }} aria-label="Supprimer cette pièce">
+              <X size={13} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div className="grid grid-cols-12">
@@ -819,7 +896,12 @@ function Redaction({ aos, followed }) {
       </div>
 
       <div className="col-span-8 sm:col-span-9 p-6">
-        {selected && (
+        {selected && !detail && (
+          <div className="flex items-center gap-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+            <Loader2 size={14} className="animate-spin" /> Chargement…
+          </div>
+        )}
+        {selected && detail && (
           <>
             <div className="flex items-center gap-2 mb-1">
               <h2
@@ -833,7 +915,7 @@ function Redaction({ aos, followed }) {
               </Tag>
             </div>
             <p className="text-xs mb-6" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
-              {selected.acheteur} — dépôt avant le {new Date(selected.dateLimit).toLocaleDateString("fr-FR")}
+              {selected.acheteur} — dépôt avant le {selected.dateLimit ? new Date(selected.dateLimit).toLocaleDateString("fr-FR") : "date à confirmer"}
             </p>
 
             <div className="mb-8">
@@ -843,49 +925,9 @@ function Redaction({ aos, followed }) {
               >
                 Pièces administratives
               </h3>
-              <div className="flex flex-col gap-1.5">
-                {(piecesAdmin[selected.id] ?? []).map((piece) => {
-                  const key = selected.id + "|" + piece.id;
-                  const done = !!checked[key];
-                  return (
-                    <div key={piece.id} className="flex items-center gap-2">
-                      <button
-                        onClick={() => setChecked((c) => ({ ...c, [key]: !c[key] }))}
-                        className="w-4 h-4 flex items-center justify-center border shrink-0"
-                        style={{
-                          borderColor: done ? TOKENS.moss : TOKENS.line,
-                          background: done ? TOKENS.moss : "white",
-                        }}
-                        aria-label="Cocher"
-                      >
-                        {done && <Check size={11} color="white" />}
-                      </button>
-                      <input
-                        value={piece.label}
-                        onChange={(e) => updatePieceLabel(setPiecesAdmin, selected.id, piece.id, e.target.value)}
-                        className="flex-1 text-sm px-2 py-1 border outline-none"
-                        style={{
-                          borderColor: TOKENS.line,
-                          fontFamily: "'Inter', sans-serif",
-                          color: TOKENS.ink,
-                          background: "white",
-                          textDecoration: done ? "line-through" : "none",
-                          opacity: done ? 0.6 : 1,
-                        }}
-                      />
-                      <button
-                        onClick={() => removePiece(setPiecesAdmin, selected.id, piece.id)}
-                        style={{ color: TOKENS.inkSoft }}
-                        aria-label="Supprimer cette pièce"
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+              {renderPieces("piecesAdmin", detail.piecesAdmin, TOKENS.moss)}
               <button
-                onClick={() => addPiece(setPiecesAdmin, selected.id)}
+                onClick={() => addPiece("piecesAdmin")}
                 className="flex items-center gap-1.5 text-[11px] px-2 py-1 mt-2"
                 style={{ background: TOKENS.mossDim, color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}
               >
@@ -905,49 +947,9 @@ function Redaction({ aos, followed }) {
                   ? "Ce dossier de conception nécessite des rendus graphiques en plus des pièces administratives."
                   : "Ce dossier de travaux/entretien ne nécessite pas de pièces graphiques."}
               </p>
-              <div className="flex flex-col gap-1.5">
-                {(piecesTech[selected.id] ?? []).map((piece) => {
-                  const key = selected.id + "|" + piece.id;
-                  const done = !!checked[key];
-                  return (
-                    <div key={piece.id} className="flex items-center gap-2">
-                      <button
-                        onClick={() => setChecked((c) => ({ ...c, [key]: !c[key] }))}
-                        className="w-4 h-4 flex items-center justify-center border shrink-0"
-                        style={{
-                          borderColor: done ? TOKENS.blue : TOKENS.line,
-                          background: done ? TOKENS.blue : "white",
-                        }}
-                        aria-label="Cocher"
-                      >
-                        {done && <Check size={11} color="white" />}
-                      </button>
-                      <input
-                        value={piece.label}
-                        onChange={(e) => updatePieceLabel(setPiecesTech, selected.id, piece.id, e.target.value)}
-                        className="flex-1 text-sm px-2 py-1 border outline-none"
-                        style={{
-                          borderColor: TOKENS.line,
-                          fontFamily: "'Inter', sans-serif",
-                          color: TOKENS.ink,
-                          background: "white",
-                          textDecoration: done ? "line-through" : "none",
-                          opacity: done ? 0.6 : 1,
-                        }}
-                      />
-                      <button
-                        onClick={() => removePiece(setPiecesTech, selected.id, piece.id)}
-                        style={{ color: TOKENS.inkSoft }}
-                        aria-label="Supprimer cette pièce"
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+              {renderPieces("piecesTech", detail.piecesTech, TOKENS.blue)}
               <button
-                onClick={() => addPiece(setPiecesTech, selected.id)}
+                onClick={() => addPiece("piecesTech")}
                 className="flex items-center gap-1.5 text-[11px] px-2 py-1 mt-2"
                 style={{ background: TOKENS.blueDim, color: TOKENS.blue, fontFamily: "'JetBrains Mono', monospace" }}
               >
@@ -973,18 +975,11 @@ function Redaction({ aos, followed }) {
                     </label>
                     <textarea
                       rows={2}
-                      value={memo[selected.id + s.key] ?? ""}
-                      onChange={(e) =>
-                        setMemo((m) => ({ ...m, [selected.id + s.key]: e.target.value }))
-                      }
+                      value={detail.memo?.[s.key] ?? ""}
+                      onChange={(e) => updateMemo(s.key, e.target.value)}
                       placeholder="Rédiger ou coller le contenu de cette section…"
                       className="w-full p-2 text-sm border outline-none resize-none"
-                      style={{
-                        borderColor: TOKENS.line,
-                        fontFamily: "'Inter', sans-serif",
-                        color: TOKENS.ink,
-                        background: "white",
-                      }}
+                      style={inputStyle}
                     />
                   </div>
                 ))}
@@ -1231,6 +1226,9 @@ function ProjectDetail({
   onRemoveMember,
   onSetMandataire,
   onUpdateLinks,
+  onAddMeeting,
+  onUpdateMeeting,
+  onRemoveMeeting,
   onClose,
 }) {
   const colorFor = (id) => {
@@ -1244,6 +1242,7 @@ function ProjectDetail({
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
   const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [selectedMeetingId, setSelectedMeetingId] = useState(null);
 
   const daysInMonth = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 0).getDate();
   const monthDays = Array.from({ length: daysInMonth }, (_, i) => new Date(viewMonth.getFullYear(), viewMonth.getMonth(), i + 1));
@@ -1263,8 +1262,15 @@ function ProjectDetail({
     const spanDays = Math.round((clipEnd - clipStart) / 86400000) + 1;
     return { leftPct: (dayIndexStart / daysInMonth) * 100, widthPct: (spanDays / daysInMonth) * 100 };
   };
+  const meetingDotFor = (r) => {
+    const d = new Date(r.date);
+    if (d < monthStart || d > monthEnd) return null;
+    const dayIndex = Math.round((d - monthStart) / 86400000);
+    return { leftPct: (dayIndex / daysInMonth) * 100 };
+  };
 
   const selectedTask = detail.tasks.find((t) => t.id === selectedTaskId);
+  const selectedMeeting = detail.meetings.find((r) => r.id === selectedMeetingId);
 
   const inputStyle = {
     borderColor: TOKENS.line,
@@ -1460,6 +1466,9 @@ function ProjectDetail({
                   {/* Lignes par personne */}
                   {detail.team.map((m) => {
                     const memberTasks = detail.tasks.filter((t) => t.assigneeId === m.id);
+                    const memberMeetings = detail.meetings.filter((r) => r.attendees?.includes(m.id));
+                    const tasksHeight = Math.max(memberTasks.length, 1) * 26 + 12;
+                    const meetingsHeight = memberMeetings.length > 0 ? 24 : 0;
                     return (
                       <React.Fragment key={m.id}>
                         <div className="px-2 py-3 border-b border-r flex items-center gap-2" style={{ borderColor: TOKENS.line }}>
@@ -1490,7 +1499,7 @@ function ProjectDetail({
                         </div>
                         <div
                           className="relative border-b"
-                          style={{ borderColor: TOKENS.line, gridColumn: `3 / span ${daysInMonth}`, height: Math.max(memberTasks.length, 1) * 26 + 12 }}
+                          style={{ borderColor: TOKENS.line, gridColumn: `3 / span ${daysInMonth}`, height: tasksHeight + meetingsHeight }}
                         >
                           {memberTasks.map((t, idx) => {
                             const bar = barFor(t);
@@ -1513,6 +1522,28 @@ function ProjectDetail({
                                 }}
                               >
                                 {t.label}
+                              </button>
+                            );
+                          })}
+                          {memberMeetings.map((r) => {
+                            const dot = meetingDotFor(r);
+                            if (!dot) return null;
+                            return (
+                              <button
+                                key={r.id}
+                                onClick={() => setSelectedMeetingId(r.id)}
+                                className="absolute flex items-center justify-center rounded-full"
+                                title={r.title + " — " + r.time}
+                                style={{
+                                  left: `calc(${dot.leftPct}% + 2px)`,
+                                  top: tasksHeight + 2,
+                                  width: 16,
+                                  height: 16,
+                                  background: TOKENS.rust,
+                                  outline: selectedMeetingId === r.id ? `2px solid ${TOKENS.ink}` : "none",
+                                }}
+                              >
+                                <CalendarDays size={10} color="white" />
                               </button>
                             );
                           })}
@@ -1596,25 +1627,48 @@ function ProjectDetail({
             <h3 className="text-xs uppercase tracking-wider flex items-center gap-2" style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}>
               <CalendarDays size={13} /> Réunions
             </h3>
-            <button
-              onClick={() => downloadICS(ao.id + "-reunions.ics", buildICS(detail.meetings))}
-              className="flex items-center gap-1.5 text-[11px] px-2 py-1"
-              style={{ background: TOKENS.blueDim, color: TOKENS.blue, fontFamily: "'JetBrains Mono', monospace" }}
-            >
-              <Download size={12} /> Tout exporter (.ics)
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const id = onAddMeeting();
+                  setSelectedMeetingId(id);
+                }}
+                className="flex items-center gap-1.5 text-[11px] px-2 py-1"
+                style={{ background: TOKENS.mossDim, color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}
+              >
+                <Plus size={12} /> Ajouter une réunion
+              </button>
+              <button
+                onClick={() => downloadICS(ao.id + "-reunions.ics", buildICS(detail.meetings))}
+                className="flex items-center gap-1.5 text-[11px] px-2 py-1"
+                style={{ background: TOKENS.blueDim, color: TOKENS.blue, fontFamily: "'JetBrains Mono', monospace" }}
+              >
+                <Download size={12} /> Tout exporter (.ics)
+              </button>
+            </div>
           </div>
           <div className="flex flex-col gap-2 mb-2">
+            {detail.meetings.length === 0 && (
+              <div className="text-[11px]" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>Aucune réunion planifiée.</div>
+            )}
             {detail.meetings.map((r) => (
-              <div key={r.id} className="flex items-center justify-between gap-3 p-3 border" style={{ borderColor: TOKENS.line, background: "white" }}>
+              <div
+                key={r.id}
+                onClick={() => setSelectedMeetingId(r.id)}
+                className="flex items-center justify-between gap-3 p-3 border cursor-pointer"
+                style={{ borderColor: selectedMeetingId === r.id ? TOKENS.moss : TOKENS.line, background: "white" }}
+              >
                 <div>
                   <div className="text-sm" style={{ color: TOKENS.ink, fontFamily: "'Inter', sans-serif", fontWeight: 500 }}>{r.title}</div>
                   <div className="text-[11px]" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
-                    {new Date(r.date).toLocaleDateString("fr-FR")} · {r.time} — {r.attendees.map(nameFor).join(", ")}
+                    {new Date(r.date).toLocaleDateString("fr-FR")} · {r.time} — {(r.attendees ?? []).map(nameFor).join(", ") || "aucun participant"}
                   </div>
                 </div>
                 <button
-                  onClick={() => downloadICS(r.id + ".ics", buildICS([r]))}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    downloadICS(r.id + ".ics", buildICS([r]));
+                  }}
                   style={{ color: TOKENS.blue }}
                   aria-label="Exporter cette réunion"
                 >
@@ -1623,6 +1677,77 @@ function ProjectDetail({
               </div>
             ))}
           </div>
+
+          {selectedMeeting && (
+            <div className="p-3 border mb-2" style={{ borderColor: TOKENS.rust, background: TOKENS.rustDim }}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] uppercase tracking-wider" style={{ color: TOKENS.rust, fontFamily: "'JetBrains Mono', monospace" }}>
+                  Modifier la réunion
+                </span>
+                <button onClick={() => setSelectedMeetingId(null)} style={{ color: TOKENS.rust }} aria-label="Fermer l'édition">
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="grid grid-cols-12 gap-1.5 mb-2">
+                <input
+                  value={selectedMeeting.title}
+                  onChange={(e) => onUpdateMeeting(selectedMeeting.id, { title: e.target.value })}
+                  className="col-span-12 sm:col-span-6 text-xs px-2 py-1 border outline-none"
+                  style={inputStyle}
+                />
+                <input
+                  type="date"
+                  value={selectedMeeting.date}
+                  onChange={(e) => onUpdateMeeting(selectedMeeting.id, { date: e.target.value })}
+                  className="col-span-6 sm:col-span-3 text-xs px-1 py-1 border outline-none"
+                  style={inputStyle}
+                />
+                <input
+                  type="time"
+                  value={selectedMeeting.time}
+                  onChange={(e) => onUpdateMeeting(selectedMeeting.id, { time: e.target.value })}
+                  className="col-span-5 sm:col-span-2 text-xs px-1 py-1 border outline-none"
+                  style={inputStyle}
+                />
+                <button
+                  onClick={() => {
+                    onRemoveMeeting(selectedMeeting.id);
+                    setSelectedMeetingId(null);
+                  }}
+                  className="col-span-1 flex items-center justify-center"
+                  style={{ color: TOKENS.rust }}
+                  aria-label="Supprimer la réunion"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {detail.team.map((m) => {
+                  const checked = (selectedMeeting.attendees ?? []).includes(m.id);
+                  return (
+                    <label
+                      key={m.id}
+                      className="flex items-center gap-1.5 text-[11px] px-2 py-1 border cursor-pointer"
+                      style={{ borderColor: TOKENS.line, background: checked ? TOKENS.mossDim : "white", fontFamily: "'Inter', sans-serif" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...(selectedMeeting.attendees ?? []), m.id]
+                            : (selectedMeeting.attendees ?? []).filter((id) => id !== m.id);
+                          onUpdateMeeting(selectedMeeting.id, { attendees: next });
+                        }}
+                      />
+                      {m.name || "Sans nom"}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <p className="text-[11px] mt-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
             Le fichier .ics s'importe en un clic dans Google Agenda (ou tout autre calendrier) pour chaque membre de
             l'équipe. Une synchronisation automatique bidirectionnelle nécessiterait une connexion OAuth à Google
@@ -2322,8 +2447,8 @@ function AppContent({ user }) {
       <div className="grid grid-cols-12">
         <div className="col-span-12 sm:col-span-2 border-r" style={{ borderColor: TOKENS.line }}>
           <NavItem icon={Radar} label="Veille" active={activeTab === "veille"} onClick={() => setActiveTab("veille")} />
-          <NavItem icon={FileText} label="Rédaction" active={activeTab === "redaction"} onClick={() => setActiveTab("redaction")} />
           <NavItem icon={KanbanSquare} label="Suivi" active={activeTab === "suivi"} onClick={() => setActiveTab("suivi")} />
+          <NavItem icon={FileText} label="Rédaction" active={activeTab === "redaction"} onClick={() => setActiveTab("redaction")} />
           <NavItem icon={Wallet} label="Suivi financier" active={activeTab === "finances"} onClick={() => setActiveTab("finances")} />
           <NavItem icon={Globe} label="Sources" active={activeTab === "sources"} onClick={() => setActiveTab("sources")} />
           <NavItem icon={Archive} label="Historique" active={activeTab === "historique"} onClick={() => setActiveTab("historique")} />
@@ -2359,7 +2484,9 @@ function AppContent({ user }) {
               platforms={platforms}
             />
           )}
-          {activeTab === "redaction" && <Redaction aos={activeAOs} followed={followed} />}
+          {activeTab === "redaction" && (
+            <Redaction aos={activeAOs} followed={followed} projectData={projectData} ensureProject={ensureProject} updateProject={updateProject} />
+          )}
           {activeTab === "suivi" && (
             <Suivi
               aos={activeAOs}
@@ -2372,153 +2499,4 @@ function AppContent({ user }) {
           )}
           {activeTab === "finances" && (
             <Finances
-              followedAOs={activeAOs.filter((a) => followed.includes(a.id))}
-              projectData={projectData}
-              ensureProject={ensureProject}
-              onUpdateCA={onUpdateCA}
-              onUpdateHours={onUpdateHours}
-            />
-          )}
-          {activeTab === "sources" && (
-            <Sources
-              platforms={platforms}
-              onToggle={onTogglePlatform}
-              onRemove={onRemovePlatform}
-              onAdd={onAddPlatform}
-            />
-          )}
-          {activeTab === "historique" && <Historique aos={historiqueAOs} onRestoreAO={onRestoreAO} />}
-        </div>
-
-      </div>
-      {openProject && projectData[openProject.id] && (
-        <ProjectDetail
-          key={openProject.id}
-          ao={openProject}
-          detail={projectData[openProject.id]}
-          onClose={() => setOpenProject(null)}
-          onUpdateTask={(taskId, patch) =>
-            updateProject(openProject.id, (d) => ({
-              ...d,
-              tasks: d.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)),
-            }))
-          }
-          onAddTask={() =>
-            updateProject(openProject.id, (d) => ({
-              ...d,
-              tasks: [
-                ...d.tasks,
-                {
-                  id: "t-" + Date.now(),
-                  label: "Nouvelle tâche",
-                  assigneeId: d.team[0]?.id,
-                  start: d.rangeStart,
-                  end: d.rangeEnd,
-                },
-              ],
-            }))
-          }
-          onRemoveTask={(taskId) =>
-            updateProject(openProject.id, (d) => ({ ...d, tasks: d.tasks.filter((t) => t.id !== taskId) }))
-          }
-          onUpdateMember={(memberId, patch) =>
-            updateProject(openProject.id, (d) => ({
-              ...d,
-              team: d.team.map((m) => (m.id === memberId ? { ...m, ...patch } : m)),
-            }))
-          }
-          onAddMember={() =>
-            updateProject(openProject.id, (d) => ({
-              ...d,
-              team: [...d.team, { id: "mb-" + Date.now(), name: "", poste: "", mandataire: false }],
-            }))
-          }
-          onRemoveMember={(memberId) =>
-            updateProject(openProject.id, (d) => ({ ...d, team: d.team.filter((m) => m.id !== memberId) }))
-          }
-          onSetMandataire={(memberId) =>
-            updateProject(openProject.id, (d) => ({
-              ...d,
-              team: d.team.map((m) => ({ ...m, mandataire: m.id === memberId })),
-            }))
-          }
-          onUpdateLinks={(patch) =>
-            updateProject(openProject.id, (d) => ({ ...d, links: { ...d.links, ...patch } }))
-          }
-        />
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------
-   APP (authentification)
---------------------------------------------------------- */
-
-export default function App() {
-  const [user, setUser] = useState(undefined); // undefined = en cours de vérification, null = déconnecté
-  const [orgReady, setOrgReady] = useState(false);
-  const [orgError, setOrgError] = useState("");
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
-    return unsub;
-  }, []);
-
-  // Chaque personne qui se connecte pour la première fois obtient un
-  // document /users/{uid} rattaché à l'organisation Co-Concept — c'est ce
-  // qui lui donne le droit de lire/écrire les données de l'organisation
-  // selon les règles de sécurité Firestore. On attend que ce document soit
-  // confirmé avant de charger le reste de l'app, pour éviter toute lecture
-  // refusée par les règles de sécurité.
-  useEffect(() => {
-    if (!user) {
-      setOrgReady(false);
-      return;
-    }
-    const uref = doc(db, "users", user.uid);
-    getDoc(uref)
-      .then((snap) => (snap.exists() ? null : setDoc(uref, { orgId: ORG_ID, email: user.email })))
-      .then(() => setOrgReady(true))
-      .catch((err) => setOrgError(err.message));
-  }, [user]);
-
-  if (user === undefined) {
-    return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
-        <style>{FONT_IMPORT}</style>
-        <Loader2 size={20} className="animate-spin" style={{ color: TOKENS.inkSoft }} />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <LoginScreen />;
-  }
-
-  if (orgError) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-6" style={{ background: TOKENS.paper }}>
-        <style>{FONT_IMPORT}</style>
-        <div className="max-w-sm text-sm p-4 border" style={{ borderColor: TOKENS.rust, background: TOKENS.rustDim, color: TOKENS.rust, fontFamily: "'Inter', sans-serif" }}>
-          Impossible d'accéder à Firestore : {orgError}
-          <br />
-          Vérifiez que les règles de sécurité sont bien publiées.
-        </div>
-      </div>
-    );
-  }
-
-  if (!orgReady) {
-    return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: TOKENS.paper }}>
-        <style>{FONT_IMPORT}</style>
-        <div className="flex items-center gap-2" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
-          <Loader2 size={16} className="animate-spin" /> Préparation de votre compte…
-        </div>
-      </div>
-    );
-  }
-
-  return <AppContent user={user} />;
-}
+              followedAOs={activeAOs.filter((a) => followed.include
