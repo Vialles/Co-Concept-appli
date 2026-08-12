@@ -269,11 +269,11 @@ const PROJECT_DETAILS = {
       { id: "m3", name: "Sofia R.", poste: "Chef d'équipe entretien", mandataire: false },
     ],
     tasks: [
-      { id: "t1", label: "Analyse du cahier des charges", assigneeId: "m1", start: "2026-08-07", end: "2026-08-12" },
-      { id: "t2", label: "Chiffrage et devis matériel", assigneeId: "m2", start: "2026-08-11", end: "2026-08-18" },
-      { id: "t3", label: "Rédaction mémoire technique", assigneeId: "m1", start: "2026-08-13", end: "2026-08-22" },
-      { id: "t4", label: "Validation planning d'intervention", assigneeId: "m3", start: "2026-08-19", end: "2026-08-25" },
-      { id: "t5", label: "Dépôt du dossier", assigneeId: "m1", start: "2026-08-26", end: "2026-08-29" },
+      { id: "t1", label: "Analyse du cahier des charges", assigneeIds: ["m1"], start: "2026-08-07", end: "2026-08-12" },
+      { id: "t2", label: "Chiffrage et devis matériel", assigneeIds: ["m2"], start: "2026-08-11", end: "2026-08-18" },
+      { id: "t3", label: "Rédaction mémoire technique", assigneeIds: ["m1"], start: "2026-08-13", end: "2026-08-22" },
+      { id: "t4", label: "Validation planning d'intervention", assigneeIds: ["m3"], start: "2026-08-19", end: "2026-08-25" },
+      { id: "t5", label: "Dépôt du dossier", assigneeIds: ["m1"], start: "2026-08-26", end: "2026-08-29" },
     ],
     meetings: [
       { id: "r1", title: "Cadrage interne du dossier", date: "2026-08-08", time: "09:30", attendees: ["m1", "m2"] },
@@ -303,10 +303,10 @@ function defaultProjectDetail(ao, followedDate) {
       { id: "d2", name: "", poste: isConception ? "Paysagiste concepteur" : "Chargé d'affaires", mandataire: false },
     ],
     tasks: [
-      { id: "d-t1", label: "Analyse du cahier des charges", assigneeId: "d1", start: fmt(start), end: fmt(new Date(start.getTime() + 4 * 86400000)) },
-      { id: "d-t2", label: isConception ? "Esquisses et pièces graphiques" : "Chiffrage et moyens", assigneeId: "d2", start: fmt(new Date(start.getTime() + 3 * 86400000)), end: fmt(mid) },
-      { id: "d-t3", label: "Rédaction du dossier", assigneeId: "d1", start: fmt(mid), end: fmt(new Date(end.getTime() - 3 * 86400000)) },
-      { id: "d-t4", label: "Dépôt", assigneeId: "d1", start: fmt(new Date(end.getTime() - 2 * 86400000)), end: fmt(end) },
+      { id: "d-t1", label: "Analyse du cahier des charges", assigneeIds: ["d1"], start: fmt(start), end: fmt(new Date(start.getTime() + 4 * 86400000)) },
+      { id: "d-t2", label: isConception ? "Esquisses et pièces graphiques" : "Chiffrage et moyens", assigneeIds: ["d2"], start: fmt(new Date(start.getTime() + 3 * 86400000)), end: fmt(mid) },
+      { id: "d-t3", label: "Rédaction du dossier", assigneeIds: ["d1"], start: fmt(mid), end: fmt(new Date(end.getTime() - 3 * 86400000)) },
+      { id: "d-t4", label: "Dépôt", assigneeIds: ["d1"], start: fmt(new Date(end.getTime() - 2 * 86400000)), end: fmt(end) },
     ],
     meetings: [
       { id: "d-r1", title: "Cadrage interne", date: fmt(new Date(start.getTime() + 1 * 86400000)), time: "09:30", attendees: ["d1", "d2"] },
@@ -335,6 +335,28 @@ function getProjectDetail(ao, followedDate) {
     };
   }
   return defaultProjectDetail(ao, followedDate);
+}
+
+// Complète les champs manquants sur une fiche projet déjà existante dans
+// Firestore (créée avant l'ajout des pièces / de la mémoire technique, par
+// exemple) — évite les plantages sur d.piecesAdmin/d.piecesTech undefined.
+function withProjectDefaults(ao, data) {
+  const defaults = defaultPieces(ao.type);
+  return {
+    team: data.team ?? [],
+    tasks: (data.tasks ?? []).map((t) => ({
+      ...t,
+      assigneeIds: t.assigneeIds ?? (t.assigneeId ? [t.assigneeId] : []),
+    })),
+    meetings: data.meetings ?? [],
+    links: data.links ?? { canva: "", onenote: "" },
+    finance: data.finance ?? { caByMonth: {}, hours: {} },
+    piecesAdmin: data.piecesAdmin ?? defaults.piecesAdmin,
+    piecesTech: data.piecesTech ?? defaults.piecesTech,
+    memo: data.memo ?? {},
+    rangeStart: data.rangeStart,
+    rangeEnd: data.rangeEnd,
+  };
 }
 
 function buildICS(events) {
@@ -1465,7 +1487,7 @@ function ProjectDetail({
 
                   {/* Lignes par personne */}
                   {detail.team.map((m) => {
-                    const memberTasks = detail.tasks.filter((t) => t.assigneeId === m.id);
+                    const memberTasks = detail.tasks.filter((t) => (t.assigneeIds ?? []).includes(m.id));
                     const memberMeetings = detail.meetings.filter((r) => r.attendees?.includes(m.id));
                     const tasksHeight = Math.max(memberTasks.length, 1) * 26 + 12;
                     const meetingsHeight = memberMeetings.length > 0 ? 24 : 0;
@@ -1494,6 +1516,9 @@ function ProjectDetail({
                               title={t.label}
                             >
                               {t.label}
+                              {(t.assigneeIds ?? []).length > 1 && (
+                                <span style={{ color: TOKENS.inkSoft }}> · +{t.assigneeIds.length - 1}</span>
+                              )}
                             </button>
                           ))}
                         </div>
@@ -1576,35 +1601,25 @@ function ProjectDetail({
                   <X size={14} />
                 </button>
               </div>
-              <div className="grid grid-cols-12 gap-1.5">
+              <div className="grid grid-cols-12 gap-1.5 mb-2">
                 <input
                   value={selectedTask.label}
                   onChange={(e) => onUpdateTask(selectedTask.id, { label: e.target.value })}
-                  className="col-span-12 sm:col-span-5 text-xs px-2 py-1 border outline-none"
+                  className="col-span-12 sm:col-span-7 text-xs px-2 py-1 border outline-none"
                   style={inputStyle}
                 />
-                <select
-                  value={selectedTask.assigneeId}
-                  onChange={(e) => onUpdateTask(selectedTask.id, { assigneeId: e.target.value })}
-                  className="col-span-6 sm:col-span-3 text-xs px-1 py-1 border outline-none"
-                  style={inputStyle}
-                >
-                  {detail.team.map((m) => (
-                    <option key={m.id} value={m.id}>{m.name || "Sans nom"}</option>
-                  ))}
-                </select>
                 <input
                   type="date"
                   value={selectedTask.start}
                   onChange={(e) => onUpdateTask(selectedTask.id, { start: e.target.value })}
-                  className="col-span-3 sm:col-span-2 text-xs px-1 py-1 border outline-none"
+                  className="col-span-5 sm:col-span-2 text-xs px-1 py-1 border outline-none"
                   style={inputStyle}
                 />
                 <input
                   type="date"
                   value={selectedTask.end}
                   onChange={(e) => onUpdateTask(selectedTask.id, { end: e.target.value })}
-                  className="col-span-2 sm:col-span-1 text-xs px-1 py-1 border outline-none"
+                  className="col-span-6 sm:col-span-2 text-xs px-1 py-1 border outline-none"
                   style={inputStyle}
                 />
                 <button
@@ -1618,6 +1633,34 @@ function ProjectDetail({
                 >
                   <X size={13} />
                 </button>
+              </div>
+              <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}>
+                Assignée à
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {detail.team.map((m) => {
+                  const checked = (selectedTask.assigneeIds ?? []).includes(m.id);
+                  return (
+                    <label
+                      key={m.id}
+                      className="flex items-center gap-1.5 text-[11px] px-2 py-1 border cursor-pointer"
+                      style={{ borderColor: TOKENS.line, background: checked ? "white" : "transparent", fontFamily: "'Inter', sans-serif" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const current = selectedTask.assigneeIds ?? [];
+                          const next = e.target.checked
+                            ? [...current, m.id]
+                            : current.filter((id) => id !== m.id);
+                          onUpdateTask(selectedTask.id, { assigneeIds: next });
+                        }}
+                      />
+                      {m.name || "Sans nom"}
+                    </label>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -2357,7 +2400,11 @@ function AppContent({ user }) {
       ref,
       (snap) => {
         if (snap.exists()) {
-          setProjectData((pd) => ({ ...pd, [ao.id]: snap.data() }));
+          const normalized = withProjectDefaults(ao, snap.data());
+          setProjectData((pd) => ({ ...pd, [ao.id]: normalized }));
+          // Si des champs manquaient (fiche créée avant l'ajout des pièces
+          // ou de la mémoire technique), on les enregistre pour de bon.
+          setDoc(ref, normalized, { merge: true }).catch(console.error);
         } else {
           const initial = getProjectDetail(ao, followedDates[ao.id] ?? TODAY);
           setDoc(ref, initial).catch(console.error);
@@ -2538,7 +2585,7 @@ function AppContent({ user }) {
                 {
                   id: "t-" + Date.now(),
                   label: "Nouvelle tâche",
-                  assigneeId: d.team[0]?.id,
+                  assigneeIds: d.team[0] ? [d.team[0].id] : [],
                   start: d.rangeStart,
                   end: d.rangeEnd,
                 },
