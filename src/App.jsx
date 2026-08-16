@@ -36,6 +36,7 @@ import {
   LogOut,
   Loader2,
   Pencil,
+  LayoutDashboard,
   Trash2,
   Archive,
   Image,
@@ -386,6 +387,45 @@ function downloadICS(filename, content) {
   URL.revokeObjectURL(url);
 }
 
+// Insère un événement (créneau horaire précis) dans le Google Agenda de la
+// personne connectée. Nécessite un token d'accès obtenu via Google Identity
+// Services (connexion à la demande, valable ~1h).
+async function pushEventToGoogle(token, { title, description, dateStr, time, durationMinutes = 60 }) {
+  const start = new Date(`${dateStr}T${time}:00`);
+  const end = new Date(start.getTime() + durationMinutes * 60000);
+  const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      summary: title,
+      description: description ?? "",
+      start: { dateTime: start.toISOString(), timeZone: "Europe/Paris" },
+      end: { dateTime: end.toISOString(), timeZone: "Europe/Paris" },
+    }),
+  });
+  if (!res.ok) throw new Error((await res.json()).error?.message ?? "Erreur Google Agenda");
+  return res.json();
+}
+
+// Insère un événement journée entière (ex. date limite de dépôt) dans le
+// Google Agenda de la personne connectée.
+async function pushAllDayEventToGoogle(token, { title, description, dateStr }) {
+  const end = new Date(dateStr);
+  end.setDate(end.getDate() + 1);
+  const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      summary: title,
+      description: description ?? "",
+      start: { date: dateStr },
+      end: { date: end.toISOString().slice(0, 10) },
+    }),
+  });
+  if (!res.ok) throw new Error((await res.json()).error?.message ?? "Erreur Google Agenda");
+  return res.json();
+}
+
 /* ---------------------------------------------------------
    SMALL PRIMITIVES
 --------------------------------------------------------- */
@@ -397,6 +437,7 @@ function Cartouche({ activeTab }) {
     suivi: "Suivi",
     finances: "Suivi financier",
     sources: "Sources",
+    ensemble: "Vue d'ensemble",
     historique: "Historique",
   }[activeTab];
 
@@ -406,19 +447,22 @@ function Cartouche({ activeTab }) {
       style={{ borderColor: TOKENS.ink, background: TOKENS.paper }}
     >
       <div className="grid grid-cols-12">
-        <div className="col-span-8 sm:col-span-9 px-6 py-4 border-r" style={{ borderColor: TOKENS.line }}>
-          <div
-            className="text-xs tracking-widest uppercase mb-1"
-            style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.15em" }}
-          >
-            Outil de réponse aux appels d'offres
+        <div className="col-span-8 sm:col-span-9 px-6 py-4 border-r flex items-center gap-4" style={{ borderColor: TOKENS.line }}>
+          <img src="/logo-co-concept.png" alt="Co-Concept" style={{ height: 44, width: "auto" }} />
+          <div>
+            <div
+              className="text-xs tracking-widest uppercase mb-1"
+              style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.15em" }}
+            >
+              Outil de réponse aux appels d'offres
+            </div>
+            <h1
+              className="text-2xl sm:text-3xl"
+              style={{ color: TOKENS.ink, fontFamily: "'Fraunces', serif", fontWeight: 600 }}
+            >
+              AO&nbsp;Paysage
+            </h1>
           </div>
-          <h1
-            className="text-2xl sm:text-3xl"
-            style={{ color: TOKENS.ink, fontFamily: "'Fraunces', serif", fontWeight: 600 }}
-          >
-            AO&nbsp;Paysage
-          </h1>
         </div>
         <div className="col-span-4 sm:col-span-3 px-4 py-4 flex flex-col justify-center">
           <div
@@ -517,6 +561,10 @@ function AddAOForm({ platforms, initial, onCancel, onSubmit }) {
   const [sourceId, setSourceId] = useState(
     platforms.find((p) => p.name === initial?.sourceName)?.id ?? ""
   );
+  const [dateDebut, setDateDebut] = useState(initial?.dateDebut ?? "");
+  const [dateFin, setDateFin] = useState(initial?.dateFin ?? "");
+  const [dateResultat, setDateResultat] = useState(initial?.dateResultat ?? "");
+  const [resultat, setResultat] = useState(initial?.resultat ?? "en_attente");
 
   const inputStyle = {
     borderColor: TOKENS.line,
@@ -542,6 +590,10 @@ function AddAOForm({ platforms, initial, onCancel, onSubmit }) {
       nouveau: initial?.nouveau ?? true,
       custom: true,
       sourceName: platforms.find((p) => p.id === sourceId)?.name ?? "",
+      dateDebut: dateDebut || null,
+      dateFin: dateFin || null,
+      dateResultat: dateResultat || null,
+      resultat,
     });
   };
 
@@ -551,7 +603,10 @@ function AddAOForm({ platforms, initial, onCancel, onSubmit }) {
         <input required value={titre} onChange={(e) => setTitre(e.target.value)} placeholder="Titre de l'AO" className="p-2 text-sm border outline-none sm:col-span-2" style={inputStyle} />
         <input value={acheteur} onChange={(e) => setAcheteur(e.target.value)} placeholder="Maître d'ouvrage / acheteur" className="p-2 text-sm border outline-none" style={inputStyle} />
         <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone / commune" className="p-2 text-sm border outline-none" style={inputStyle} />
-        <input type="date" value={dateLimit} onChange={(e) => setDateLimit(e.target.value)} className="p-2 text-sm border outline-none" style={inputStyle} />
+        <div>
+          <label className="text-[10px] uppercase tracking-wider block mb-0.5" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>Date limite de dépôt</label>
+          <input type="date" value={dateLimit} onChange={(e) => setDateLimit(e.target.value)} className="p-2 text-sm border outline-none w-full" style={inputStyle} />
+        </div>
         <input value={montant} onChange={(e) => setMontant(e.target.value)} placeholder="Montant estimé" className="p-2 text-sm border outline-none" style={inputStyle} />
         <select value={type} onChange={(e) => setType(e.target.value)} className="p-2 text-sm border outline-none" style={inputStyle}>
           <option value="conception">Conception</option>
@@ -565,6 +620,35 @@ function AddAOForm({ platforms, initial, onCancel, onSubmit }) {
         </select>
         <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Mots-clés séparés par des virgules" className="p-2 text-sm border outline-none sm:col-span-2" style={inputStyle} />
       </div>
+
+      <div className="mt-2 pt-2 border-t" style={{ borderColor: TOKENS.line }}>
+        <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}>
+          Pour la vue d'ensemble (planning et suivi financier)
+        </div>
+        <div className="grid sm:grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] uppercase tracking-wider block mb-0.5" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>Début du projet</label>
+            <input type="date" value={dateDebut} onChange={(e) => setDateDebut(e.target.value)} className="p-2 text-sm border outline-none w-full" style={inputStyle} />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider block mb-0.5" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>Fin du projet</label>
+            <input type="date" value={dateFin} onChange={(e) => setDateFin(e.target.value)} className="p-2 text-sm border outline-none w-full" style={inputStyle} />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider block mb-0.5" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>Date de résultat</label>
+            <input type="date" value={dateResultat} onChange={(e) => setDateResultat(e.target.value)} className="p-2 text-sm border outline-none w-full" style={inputStyle} />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider block mb-0.5" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>Résultat</label>
+            <select value={resultat} onChange={(e) => setResultat(e.target.value)} className="p-2 text-sm border outline-none w-full" style={inputStyle}>
+              <option value="en_attente">En attente</option>
+              <option value="gagne">Gagné</option>
+              <option value="perdu">Perdu</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <div className="flex gap-2 mt-1">
         <button type="submit" className="text-sm px-3 py-2" style={{ background: TOKENS.ink, color: TOKENS.paper, fontFamily: "'Inter', sans-serif", fontWeight: 600 }}>
           {initial ? "Enregistrer les modifications" : "Ajouter cet AO"}
@@ -577,8 +661,30 @@ function AddAOForm({ platforms, initial, onCancel, onSubmit }) {
   );
 }
 
-function Veille({ aos, followed, onFollow, onAddAO, onUpdateAO, onDeleteAO, onArchiveAO, platforms }) {
+function Veille({ aos, followed, onFollow, onAddAO, onUpdateAO, onDeleteAO, onArchiveAO, platforms, googleConnected, googleToken, connectGoogle }) {
   const [query, setQuery] = useState("");
+  const [sendingId, setSendingId] = useState(null);
+  const [sentIds, setSentIds] = useState({});
+
+  const sendDeadline = async (ao) => {
+    if (!googleConnected) {
+      connectGoogle();
+      return;
+    }
+    setSendingId(ao.id);
+    try {
+      await pushAllDayEventToGoogle(googleToken, {
+        title: "Date limite de dépôt — " + ao.titre,
+        description: (ao.acheteur ?? "") + (ao.zone ? " — " + ao.zone : ""),
+        dateStr: ao.dateLimit,
+      });
+      setSentIds((s) => ({ ...s, [ao.id]: true }));
+    } catch (err) {
+      alert("Échec de l'envoi vers Google Agenda : " + err.message);
+    } finally {
+      setSendingId(null);
+    }
+  };
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const filtered = useMemo(
@@ -748,6 +854,23 @@ function Veille({ aos, followed, onFollow, onAddAO, onUpdateAO, onDeleteAO, onAr
                 >
                   <Archive size={12} /> Archiver (réalisé)
                 </button>
+                {ao.dateLimit && (
+                  <button
+                    onClick={() => sendDeadline(ao)}
+                    disabled={sendingId === ao.id}
+                    className="flex items-center gap-1 text-[11px]"
+                    style={{ color: sentIds[ao.id] ? TOKENS.moss : TOKENS.blue, fontFamily: "'Inter', sans-serif" }}
+                  >
+                    {sendingId === ao.id ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : sentIds[ao.id] ? (
+                      <Check size={12} />
+                    ) : (
+                      <CalendarDays size={12} />
+                    )}
+                    {sentIds[ao.id] ? "Envoyé" : "Date limite → Google Agenda"}
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     if (window.confirm("Supprimer définitivement cet AO ?")) onDeleteAO(ao.id);
@@ -1252,12 +1375,38 @@ function ProjectDetail({
   onUpdateMeeting,
   onRemoveMeeting,
   onClose,
+  googleConnected,
+  googleToken,
+  connectGoogle,
 }) {
   const colorFor = (id) => {
     const idx = detail.team.findIndex((m) => m.id === id);
     return MEMBER_COLORS[idx % MEMBER_COLORS.length];
   };
   const nameFor = (id) => detail.team.find((m) => m.id === id)?.name || "Sans nom";
+  const [sendingMeetingId, setSendingMeetingId] = useState(null);
+  const [sentMeetingIds, setSentMeetingIds] = useState({});
+
+  const sendMeetingToGoogle = async (r) => {
+    if (!googleConnected) {
+      connectGoogle();
+      return;
+    }
+    setSendingMeetingId(r.id);
+    try {
+      await pushEventToGoogle(googleToken, {
+        title: r.title + " — " + ao.titre,
+        description: "Participants : " + ((r.attendees ?? []).map(nameFor).join(", ") || "à définir"),
+        dateStr: r.date,
+        time: r.time,
+      });
+      setSentMeetingIds((s) => ({ ...s, [r.id]: true }));
+    } catch (err) {
+      alert("Échec de l'envoi vers Google Agenda : " + err.message);
+    } finally {
+      setSendingMeetingId(null);
+    }
+  };
 
   const [viewMonth, setViewMonth] = useState(() => {
     const d = new Date(detail.rangeStart ?? "2026-08-06");
@@ -1707,16 +1856,36 @@ function ProjectDetail({
                     {new Date(r.date).toLocaleDateString("fr-FR")} · {r.time} — {(r.attendees ?? []).map(nameFor).join(", ") || "aucun participant"}
                   </div>
                 </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    downloadICS(r.id + ".ics", buildICS([r]));
-                  }}
-                  style={{ color: TOKENS.blue }}
-                  aria-label="Exporter cette réunion"
-                >
-                  <Download size={15} />
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      sendMeetingToGoogle(r);
+                    }}
+                    disabled={sendingMeetingId === r.id}
+                    style={{ color: sentMeetingIds[r.id] ? TOKENS.moss : TOKENS.blue }}
+                    aria-label="Envoyer vers Google Agenda"
+                    title="Envoyer vers mon Google Agenda"
+                  >
+                    {sendingMeetingId === r.id ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : sentMeetingIds[r.id] ? (
+                      <Check size={15} />
+                    ) : (
+                      <CalendarDays size={15} />
+                    )}
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      downloadICS(r.id + ".ics", buildICS([r]));
+                    }}
+                    style={{ color: TOKENS.blue }}
+                    aria-label="Exporter cette réunion"
+                  >
+                    <Download size={15} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -2161,6 +2330,200 @@ function Historique({ aos, onRestoreAO }) {
 }
 
 /* ---------------------------------------------------------
+   VUE D'ENSEMBLE (Gantt inter-AO + suivi financier par date de fin)
+--------------------------------------------------------- */
+
+const RESULTAT_LABEL = { en_attente: "En attente", gagne: "Gagné", perdu: "Perdu" };
+const RESULTAT_COLOR = { en_attente: TOKENS.blue, gagne: TOKENS.moss, perdu: TOKENS.rust };
+
+function VueEnsemble({ aos, followed, projectData, ensureProject }) {
+  const followedAOs = aos.filter((a) => followed.includes(a.id));
+  useEffect(() => {
+    followedAOs.forEach((a) => ensureProject(a));
+  }, [followed]);
+
+  const [viewMonth, setViewMonth] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+  const daysInMonth = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 0).getDate();
+  const monthDays = Array.from({ length: daysInMonth }, (_, i) => new Date(viewMonth.getFullYear(), viewMonth.getMonth(), i + 1));
+  const monthStart = monthDays[0];
+  const monthEnd = monthDays[monthDays.length - 1];
+  const monthLabel = viewMonth.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  const monthLabelCap = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+  const DAY_W = 30;
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const planned = followedAOs.filter((a) => a.dateDebut && a.dateFin);
+  const missingDates = followedAOs.filter((a) => !(a.dateDebut && a.dateFin));
+
+  const barFor = (a) => {
+    const s = new Date(a.dateDebut);
+    const e = new Date(a.dateFin);
+    if (e < monthStart || s > monthEnd) return null;
+    const clipStart = s < monthStart ? monthStart : s;
+    const clipEnd = e > monthEnd ? monthEnd : e;
+    const dayIndexStart = Math.round((clipStart - monthStart) / 86400000);
+    const spanDays = Math.round((clipEnd - clipStart) / 86400000) + 1;
+    return { leftPct: (dayIndexStart / daysInMonth) * 100, widthPct: (spanDays / daysInMonth) * 100 };
+  };
+  const resultDotFor = (a) => {
+    if (!a.dateResultat) return null;
+    const d = new Date(a.dateResultat);
+    if (d < monthStart || d > monthEnd) return null;
+    const dayIndex = Math.round((d - monthStart) / 86400000);
+    return { leftPct: (dayIndex / daysInMonth) * 100 };
+  };
+
+  // Suivi financier : chaque AO est rattaché au mois de sa date de fin.
+  const finiCeMois = followedAOs.filter((a) => a.dateFin && a.dateFin.slice(0, 7) === fmtMonthKey(viewMonth));
+  const caOf = (a) => {
+    const d = projectData[a.id];
+    if (!d?.finance?.caByMonth) return 0;
+    return Object.values(d.finance.caByMonth).reduce((s, v) => s + (parseFloat((v ?? "").toString().replace(/[^\d.]/g, "")) || 0), 0);
+  };
+  const caGagne = finiCeMois.filter((a) => a.resultat === "gagne").reduce((s, a) => s + caOf(a), 0);
+  const caPerdu = finiCeMois.filter((a) => a.resultat === "perdu").reduce((s, a) => s + caOf(a), 0);
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-5 px-3 py-2 border" style={{ borderColor: TOKENS.line, background: "white" }}>
+        <button onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))} style={{ color: TOKENS.inkSoft }} aria-label="Mois précédent">
+          <ChevronLeft size={16} />
+        </button>
+        <span className="text-sm" style={{ color: TOKENS.ink, fontFamily: "'Fraunces', serif", fontWeight: 600 }}>
+          {monthLabelCap}
+        </span>
+        <button onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))} style={{ color: TOKENS.inkSoft }} aria-label="Mois suivant">
+          <ChevronRight size={16} />
+        </button>
+      </div>
+
+      {/* Gantt inter-AO */}
+      <h3 className="text-xs uppercase tracking-wider mb-2" style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}>
+        Planning des appels d'offres
+      </h3>
+      {planned.length === 0 ? (
+        <p className="text-xs mb-6" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+          Aucun AO suivi n'a encore de date de début/fin renseignée. Ajoutez-les depuis Veille (bouton Modifier).
+        </p>
+      ) : (
+        <div className="border mb-2" style={{ borderColor: TOKENS.line, background: "white" }}>
+          <div className="overflow-x-auto">
+            <div style={{ minWidth: 180 + daysInMonth * DAY_W }}>
+              <div className="grid" style={{ gridTemplateColumns: `180px repeat(${daysInMonth}, ${DAY_W}px)` }}>
+                <div className="px-2 py-1.5 border-b border-r text-[10px] uppercase" style={{ borderColor: TOKENS.line, color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                  Appel d'offres
+                </div>
+                {monthDays.map((d) => {
+                  const isToday = d.toISOString().slice(0, 10) === todayStr;
+                  const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+                  return (
+                    <div key={d.toISOString()} className="py-1.5 text-center border-b" style={{ borderColor: TOKENS.line, background: isToday ? TOKENS.clayDim : isWeekend ? TOKENS.paperDim : "transparent" }}>
+                      <div className="text-[9px] uppercase" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                        {WEEKDAY_LETTERS[(d.getDay() + 6) % 7]}
+                      </div>
+                      <div className="text-[11px]" style={{ color: isToday ? TOKENS.rust : TOKENS.ink, fontFamily: "'JetBrains Mono', monospace", fontWeight: isToday ? 700 : 500 }}>
+                        {d.getDate()}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {planned.map((a) => {
+                  const bar = barFor(a);
+                  const dot = resultDotFor(a);
+                  const color = RESULTAT_COLOR[a.resultat] ?? TOKENS.blue;
+                  return (
+                    <React.Fragment key={a.id}>
+                      <div className="px-2 py-3 border-b border-r" style={{ borderColor: TOKENS.line }}>
+                        <div className="text-xs leading-tight truncate" style={{ color: TOKENS.ink, fontFamily: "'Inter', sans-serif", fontWeight: 500 }} title={a.titre}>
+                          {a.titre}
+                        </div>
+                        <Tag tone={a.resultat === "gagne" ? "moss" : a.resultat === "perdu" ? "rust" : "blue"}>
+                          {RESULTAT_LABEL[a.resultat ?? "en_attente"]}
+                        </Tag>
+                      </div>
+                      <div className="relative border-b" style={{ borderColor: TOKENS.line, gridColumn: `2 / span ${daysInMonth}`, height: 40 }}>
+                        {bar && (
+                          <div
+                            className="absolute text-[10px] px-2 flex items-center truncate text-white"
+                            style={{ left: bar.leftPct + "%", width: `calc(${bar.widthPct}% - 3px)`, top: 10, height: 20, background: color, fontFamily: "'Inter', sans-serif", fontWeight: 500 }}
+                          >
+                            {a.titre}
+                          </div>
+                        )}
+                        {dot && (
+                          <div
+                            className="absolute flex items-center justify-center rounded-full"
+                            title={"Résultat : " + new Date(a.dateResultat).toLocaleDateString("fr-FR")}
+                            style={{ left: `calc(${dot.leftPct}% + 2px)`, top: 34, width: 14, height: 14, background: TOKENS.ink }}
+                          >
+                            <Trophy size={9} color="white" />
+                          </div>
+                        )}
+                      </div>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="flex items-center gap-4 mb-8 text-[11px]" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: TOKENS.blue }} /> En attente</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: TOKENS.moss }} /> Gagné</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: TOKENS.rust }} /> Perdu</span>
+        <span className="flex items-center gap-1.5"><Trophy size={11} /> Date de résultat</span>
+      </div>
+
+      {/* Suivi financier par date de fin */}
+      <h3 className="text-xs uppercase tracking-wider mb-2" style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}>
+        Suivi financier — AO se terminant en {monthLabelCap}
+      </h3>
+      <div className="grid sm:grid-cols-2 gap-4 mb-4">
+        <div className="p-4 border" style={{ borderColor: TOKENS.moss, background: TOKENS.mossDim }}>
+          <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace" }}>CA gagné</div>
+          <div className="text-2xl" style={{ color: TOKENS.ink, fontFamily: "'Fraunces', serif", fontWeight: 600 }}>{caGagne.toLocaleString("fr-FR")} €</div>
+        </div>
+        <div className="p-4 border" style={{ borderColor: TOKENS.rust, background: TOKENS.rustDim }}>
+          <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: TOKENS.rust, fontFamily: "'JetBrains Mono', monospace" }}>CA perdu</div>
+          <div className="text-2xl" style={{ color: TOKENS.ink, fontFamily: "'Fraunces', serif", fontWeight: 600 }}>{caPerdu.toLocaleString("fr-FR")} €</div>
+        </div>
+      </div>
+
+      {finiCeMois.length === 0 ? (
+        <p className="text-xs" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>Aucun AO suivi ne se termine ce mois-ci.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {finiCeMois.map((a) => (
+            <div key={a.id} className="flex items-center justify-between gap-3 p-3 border" style={{ borderColor: TOKENS.line, background: "white" }}>
+              <div>
+                <div className="text-sm" style={{ color: TOKENS.ink, fontFamily: "'Inter', sans-serif", fontWeight: 500 }}>{a.titre}</div>
+                <div className="text-[11px]" style={{ color: TOKENS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                  Fin le {new Date(a.dateFin).toLocaleDateString("fr-FR")} · CA {caOf(a).toLocaleString("fr-FR")} €
+                </div>
+              </div>
+              <Tag tone={a.resultat === "gagne" ? "moss" : a.resultat === "perdu" ? "rust" : "blue"}>
+                {RESULTAT_LABEL[a.resultat ?? "en_attente"]}
+              </Tag>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {missingDates.length > 0 && (
+        <p className="text-[11px] mt-6" style={{ color: TOKENS.inkSoft, fontFamily: "'Inter', sans-serif" }}>
+          {missingDates.length} AO suivi{missingDates.length > 1 ? "s" : ""} sans date de début/fin, donc absent{missingDates.length > 1 ? "s" : ""} du planning : {missingDates.map((a) => a.titre).join(", ")}.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
    AUTHENTIFICATION
 --------------------------------------------------------- */
 
@@ -2208,6 +2571,7 @@ function LoginScreen() {
     >
       <style>{FONT_IMPORT}</style>
       <div className="w-full max-w-sm p-6 border" style={{ borderColor: TOKENS.ink, background: "white" }}>
+        <img src="/logo-co-concept.png" alt="Co-Concept" style={{ height: 48, width: "auto" }} className="mb-4" />
         <div
           className="text-[10px] uppercase tracking-widest mb-1"
           style={{ color: TOKENS.moss, fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.15em" }}
@@ -2293,6 +2657,36 @@ function AppContent({ user }) {
   const [aosLoaded, setAOsLoaded] = useState(false);
   const seededRef = useRef(false);
   const projectSubs = useRef({});
+  const [googleToken, setGoogleToken] = useState(null);
+  const [googleExpiry, setGoogleExpiry] = useState(0);
+  const [googleError, setGoogleError] = useState("");
+  const googleConnected = !!googleToken && Date.now() < googleExpiry;
+
+  const connectGoogle = () => {
+    setGoogleError("");
+    if (!window.google?.accounts?.oauth2) {
+      setGoogleError("Le service Google n'est pas encore chargé, réessayez dans un instant.");
+      return;
+    }
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      setGoogleError("Aucun identifiant Google Client configuré (VITE_GOOGLE_CLIENT_ID).");
+      return;
+    }
+    const tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: "https://www.googleapis.com/auth/calendar.events",
+      callback: (resp) => {
+        if (resp.error) {
+          setGoogleError("Connexion refusée : " + resp.error);
+          return;
+        }
+        setGoogleToken(resp.access_token);
+        setGoogleExpiry(Date.now() + resp.expires_in * 1000);
+      },
+    });
+    tokenClient.requestAccessToken();
+  };
 
   const TODAY = "2026-08-06";
   const mainRef = doc(db, "organisations", ORG_ID, "app", "main");
@@ -2493,6 +2887,7 @@ function AppContent({ user }) {
       <Cartouche activeTab={activeTab} />
       <div className="grid grid-cols-12">
         <div className="col-span-12 sm:col-span-2 border-r" style={{ borderColor: TOKENS.line }}>
+          <NavItem icon={LayoutDashboard} label="Vue d'ensemble" active={activeTab === "ensemble"} onClick={() => setActiveTab("ensemble")} />
           <NavItem icon={Radar} label="Veille" active={activeTab === "veille"} onClick={() => setActiveTab("veille")} />
           <NavItem icon={KanbanSquare} label="Suivi" active={activeTab === "suivi"} onClick={() => setActiveTab("suivi")} />
           <NavItem icon={FileText} label="Rédaction" active={activeTab === "redaction"} onClick={() => setActiveTab("redaction")} />
@@ -2517,8 +2912,29 @@ function AppContent({ user }) {
               <LogOut size={12} /> Se déconnecter
             </button>
           </div>
+          <div className="px-4 py-2" style={{ borderTop: `1px solid ${TOKENS.line}` }}>
+            {googleConnected ? (
+              <span className="flex items-center gap-1.5 text-[11px]" style={{ color: TOKENS.moss, fontFamily: "'Inter', sans-serif" }}>
+                <Check size={12} /> Google Agenda connecté
+              </span>
+            ) : (
+              <button
+                onClick={connectGoogle}
+                className="flex items-center gap-1.5 text-[11px]"
+                style={{ color: TOKENS.blue, fontFamily: "'Inter', sans-serif" }}
+              >
+                <CalendarDays size={12} /> Connecter mon Google Agenda
+              </button>
+            )}
+            {googleError && (
+              <div className="text-[10px] mt-1" style={{ color: TOKENS.rust, fontFamily: "'Inter', sans-serif" }}>{googleError}</div>
+            )}
+          </div>
         </div>
         <div className="col-span-12 sm:col-span-10">
+          {activeTab === "ensemble" && (
+            <VueEnsemble aos={activeAOs} followed={followed} projectData={projectData} ensureProject={ensureProject} />
+          )}
           {activeTab === "veille" && (
             <Veille
               aos={activeAOs}
@@ -2529,6 +2945,9 @@ function AppContent({ user }) {
               onDeleteAO={onDeleteAO}
               onArchiveAO={onArchiveAO}
               platforms={platforms}
+              googleConnected={googleConnected}
+              googleToken={googleToken}
+              connectGoogle={connectGoogle}
             />
           )}
           {activeTab === "redaction" && (
@@ -2571,6 +2990,9 @@ function AppContent({ user }) {
           ao={openProject}
           detail={projectData[openProject.id]}
           onClose={() => setOpenProject(null)}
+          googleConnected={googleConnected}
+          googleToken={googleToken}
+          connectGoogle={connectGoogle}
           onUpdateTask={(taskId, patch) =>
             updateProject(openProject.id, (d) => ({
               ...d,
